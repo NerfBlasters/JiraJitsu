@@ -1,0 +1,21 @@
+# JiraJitsu Configuration File
+# Copy this file to config.yml and customize for your environment
+# This file contains non-sensitive settings. Credentials go in .env
+
+# Logging Configuration
+log_dir: logs/
+log_max_bytes: 10485760  # 10MB
+log_backup_count: 5
+
+# JitBit Settings
+jitbit_migrate_category_id: 12345  # Category ID for migrated tickets
+jitbit_delete_category_id: 12346   # Category ID for failed/deleted tickets
+jitbit_default_assign_email: default@yourcompany.com  # Default assignee email
+
+# JIRA Settings
+jira_filter_id: 10000  # JIRA filter ID to use for migration
+jira_tag_field: customfield_10800  # Custom field for migration tags
+
+# Attachment Settings
+fetch_attachments: NEW_ONLY  # Options: NEW_ONLY or DELETE_REFETCH
+attachment_folder: /path/to/attachments  # Local directory for attachment storage
