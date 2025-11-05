@@ -84,3 +84,12 @@ if ATTACHMENT_FOLDER and not os.path.isdir(ATTACHMENT_FOLDER):
     # Don't fail at import time - let individual commands handle this
     pass
 
+# Rate Limiting Configuration
+# JitBit API rate limits per their docs:
+# - Most resource-intensive methods: 90 requests per minute
+# - Search and UserByEmail: 60 requests per minute
+JITBIT_RATE_LIMIT_DEFAULT = data.get('jitbit_rate_limit_default', 90)  # requests per minute
+JITBIT_RATE_LIMIT_RESTRICTED = data.get('jitbit_rate_limit_restricted', 60)  # for Search and UserByEmail
+JITBIT_RATE_LIMIT_RETRY_DELAY = data.get('jitbit_rate_limit_retry_delay', 60)  # seconds to wait after 429
+JITBIT_RATE_LIMIT_MAX_RETRIES = data.get('jitbit_rate_limit_max_retries', 3)  # max retry attempts
+

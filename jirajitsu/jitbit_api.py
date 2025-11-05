@@ -4,6 +4,8 @@ import re
 import json
 import os
 import logging
+import time
+from collections import deque
 from . import config
 
 logger = logging.getLogger(config.LOG_ALIAS)
@@ -17,8 +19,66 @@ class JitbitApi(object):
     def __init__(self, base_data=None, data_set_alias_dir=None, master_data_dir=None, debug=None):
         logger.info('Starting JitbitApi ..')
 
+        # Rate limiting state - using deque for efficient sliding window
+        # Track timestamps of requests in the last minute
+        self._request_history_default = deque()  # For standard endpoints (90/min)
+        self._request_history_restricted = deque()  # For restricted endpoints (60/min)
+
+        # Restricted endpoints that have lower rate limits
+        self._restricted_endpoints = {'/UserByEmail', '/Search'}
+
     def __del__(self):
         pass
+
+    def _check_rate_limit(self, url: str) -> None:
+        """
+        Check and enforce rate limits before making a request.
+        Uses sliding window approach - removes timestamps older than 1 minute.
+        Sleeps if rate limit would be exceeded.
+
+        Args:
+            url: The API endpoint URL being called
+        """
+        current_time = time.time()
+        one_minute_ago = current_time - 60
+
+        # Determine which rate limit applies based on endpoint
+        is_restricted = any(endpoint in url for endpoint in self._restricted_endpoints)
+
+        if is_restricted:
+            history = self._request_history_restricted
+            limit = config.JITBIT_RATE_LIMIT_RESTRICTED
+            limit_type = "restricted"
+        else:
+            history = self._request_history_default
+            limit = config.JITBIT_RATE_LIMIT_DEFAULT
+            limit_type = "default"
+
+        # Remove timestamps older than 1 minute (sliding window)
+        while history and history[0] < one_minute_ago:
+            history.popleft()
+
+        # Check if we've hit the rate limit
+        if len(history) >= limit:
+            # Calculate how long to wait until the oldest request expires
+            oldest_request = history[0]
+            wait_time = 60 - (current_time - oldest_request) + 0.1  # Add small buffer
+
+            if wait_time > 0:
+                logger.warning(
+                    f'Rate limit ({limit_type}: {limit}/min) reached. '
+                    f'Waiting {wait_time:.1f} seconds before next request...'
+                )
+                time.sleep(wait_time)
+
+                # Clean up expired timestamps after waiting
+                current_time = time.time()
+                one_minute_ago = current_time - 60
+                while history and history[0] < one_minute_ago:
+                    history.popleft()
+
+        # Record this request timestamp
+        history.append(current_time)
 
     def _get_auth_config(self) -> tuple[dict | None, dict | None]:
         """
@@ -40,23 +100,69 @@ class JitbitApi(object):
 
     def _make_request(self, method: str, url: str, **kwargs):
         """
-        Make an authenticated request to JitBit API.
+        Make an authenticated request to JitBit API with rate limiting and retry logic.
         Automatically adds the correct authentication based on config.
+        Handles 429 (Too Many Requests) responses with exponential backoff.
+
+        Args:
+            method: HTTP method (GET, POST, etc.)
+            url: Full URL to request
+            **kwargs: Additional arguments passed to requests.request()
+
+        Returns:
+            requests.Response object
+
+        Raises:
+            Exception: If request fails after all retry attempts
         """
-        auth, headers = self._get_auth_config()
+        max_retries = config.JITBIT_RATE_LIMIT_MAX_RETRIES
+        retry_delay = config.JITBIT_RATE_LIMIT_RETRY_DELAY
 
-        # Merge any existing headers
-        if headers:
-            if 'headers' in kwargs:
-                kwargs['headers'].update(headers)
-            else:
-                kwargs['headers'] = headers
+        for attempt in range(max_retries + 1):
+            # Check rate limit before making request
+            self._check_rate_limit(url)
 
-        # Add auth if using basic auth
-        if auth:
-            kwargs['auth'] = auth
+            # Get authentication config
+            auth, headers = self._get_auth_config()
 
-        return requests.request(method, url, **kwargs)
+            # Merge any existing headers
+            if headers:
+                if 'headers' in kwargs:
+                    kwargs['headers'].update(headers)
+                else:
+                    kwargs['headers'] = headers
+
+            # Add auth if using basic auth
+            if auth:
+                kwargs['auth'] = auth
+
+            # Make the request
+            response = requests.request(method, url, **kwargs)
+
+            # Handle 429 Too Many Requests
+            if response.status_code == 429:
+                if attempt < max_retries:
+                    # Exponential backoff: wait longer on each retry
+                    wait_time = retry_delay * (2 ** attempt)
+                    logger.warning(
+                        f'Received 429 Too Many Requests. '
+                        f'Attempt {attempt + 1}/{max_retries + 1}. '
+                        f'Waiting {wait_time} seconds before retry...'
+                    )
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(
+                        f'Received 429 Too Many Requests after {max_retries + 1} attempts. '
+                        f'Giving up on request to {url}'
+                    )
+                    return response
+
+            # Success or non-429 error - return the response
+            return response
+
+        # Should not reach here, but just in case
+        return response
 
     def check_url_and_user(self) -> bool:
 
