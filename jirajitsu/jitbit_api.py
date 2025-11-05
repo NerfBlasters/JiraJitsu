@@ -20,6 +20,44 @@ class JitbitApi(object):
     def __del__(self):
         pass
 
+    def _get_auth_config(self) -> tuple[dict | None, dict | None]:
+        """
+        Get authentication configuration based on auth method.
+        Returns (auth, headers) tuple.
+
+        - Basic auth: returns (auth=(user, pwd), None)
+        - Token auth: returns (None, headers={'Authorization': 'Bearer token'})
+        """
+        auth_method = config.JITBIT_AUTH_METHOD
+
+        if auth_method == 'token':
+            logger.debug('Using JitBit token authentication')
+            return None, {'Authorization': f'Bearer {config.JITBIT_TOKEN}'}
+        else:
+            # Basic authentication
+            logger.debug('Using JitBit basic authentication')
+            return (config.JITBIT_USER, config.JITBIT_PWD), None
+
+    def _make_request(self, method: str, url: str, **kwargs):
+        """
+        Make an authenticated request to JitBit API.
+        Automatically adds the correct authentication based on config.
+        """
+        auth, headers = self._get_auth_config()
+
+        # Merge any existing headers
+        if headers:
+            if 'headers' in kwargs:
+                kwargs['headers'].update(headers)
+            else:
+                kwargs['headers'] = headers
+
+        # Add auth if using basic auth
+        if auth:
+            kwargs['auth'] = auth
+
+        return requests.request(method, url, **kwargs)
+
     def check_url_and_user(self) -> bool:
 
         ret = False
@@ -29,7 +67,7 @@ class JitbitApi(object):
 
         try:
 
-            response = requests.get(url, auth=(config.JITBIT_USER, config.JITBIT_PWD))
+            response = self._make_request('POST', url)  # Fixed: API requires POST not GET
 
             if response.status_code == 200:
                 logger.info(f'Successfully connected to URL: {url}')
@@ -66,7 +104,7 @@ class JitbitApi(object):
         logger.debug(in_data)
 
         try:
-            response = requests.post(url, auth=(config.JITBIT_USER, config.JITBIT_PWD), data=in_data)
+            response = self._make_request('POST', url, data=in_data)
 
             if response.status_code == 200:
                 logger.info(f'[{key}] Successfully connected to URL: {url}')
@@ -92,7 +130,7 @@ class JitbitApi(object):
         in_data = {'id': ticket_id, 'body': comment, 'fromUserId': comment_author_id}
 
         try:
-            response = requests.post(url, auth=(config.JITBIT_USER, config.JITBIT_PWD), data=in_data)
+            response = self._make_request('POST', url, data=in_data)
 
             if response.status_code == 200:
                 logger.info(f'[{key}] Successfully connected to URL: {url}')
@@ -119,10 +157,10 @@ class JitbitApi(object):
 
         logger.info(f'[{key}] Connecting to  URL: {url} ...')
 
-        in_data = {'file': open(attach_file, 'rb')}
+        in_data = {'uploadFile': open(attach_file, 'rb')}  # Fixed: API expects 'uploadFile' not 'file'
         try:
 
-            response = requests.post(url, auth=(config.JITBIT_USER, config.JITBIT_PWD), params=params, files=in_data)
+            response = self._make_request('POST', url, params=params, files=in_data)
 
             if response.status_code == 200:
                 logger.info(f'[{key}] Successfully connected to URL: {url}')
@@ -154,7 +192,7 @@ class JitbitApi(object):
         logger.info(f'[{email}] Connecting to  URL: {url} ...')
 
         try:
-            response = requests.get(url, auth=(config.JITBIT_USER, config.JITBIT_PWD), params=params)
+            response = self._make_request('GET', url, params=params)
 
             if response.status_code == 200:
                 logger.info(f'[{email}] Successfully connected to URL: {url}')
@@ -165,9 +203,9 @@ class JitbitApi(object):
             else:
                 logger.critical(f'[{email}] ERROR: Unable to connect to URL: {url}')
                 # Return default user ID
-                default_response = requests.get(
+                default_response = self._make_request(
+                    'GET',
                     url,
-                    auth=(config.JITBIT_USER, config.JITBIT_PWD),
                     params={'email': config.JITBIT_DEFAULT_ASSIGN_EMAIL}
                 )
                 if default_response.status_code == 200:
@@ -185,20 +223,20 @@ class JitbitApi(object):
         Returns True if user is a technician, False otherwise.
         """
         url = config.JITBIT_API_URL + '/User'
-        params = {'id': user_id}
+        params = {'userId': user_id}  # Fixed: API expects 'userId' not 'id'
         logger.info(f'[{user_id}] Checking technician status at URL: {url} ...')
 
         try:
-            response = requests.get(url, auth=(config.JITBIT_USER, config.JITBIT_PWD), params=params)
+            response = self._make_request('GET', url, params=params)
 
             if response.status_code == 200:
                 logger.info(f'[{user_id}] Successfully retrieved user info from URL: {url}')
                 user_data = response.json()
-                is_tech = user_data.get("IsTechie", False)
+                is_tech = user_data.get("IsTech", False)  # Fixed: API returns 'IsTech' not 'IsTechie'
                 logger.info(f'User {user_id} technician status: {is_tech}')
                 return is_tech
             else:
-                logger.warning(f'[{user_id}] ERROR: Unable to retrieve user info from URL: {url}')
+                logger.warning(f'[{user_id}] ERROR: Unable to retrieve user info from URL: {url} - Status {response.status_code}')
                 return False
 
         except Exception as e:
@@ -214,7 +252,7 @@ class JitbitApi(object):
 
         params = {'id': ticket_id, 'statusId': status_id}
         try:
-            response = requests.post(url, auth=(config.JITBIT_USER, config.JITBIT_PWD), params=params)
+            response = self._make_request('POST', url, params=params)
 
             if response.status_code == 200:
                 logger.info(f'[{key}] Successfully connected to URL: {url}')
@@ -264,7 +302,7 @@ class JitbitApi(object):
         logger.debug(f'Update data: {in_data}')
 
         try:
-            response = requests.post(url, auth=(config.JITBIT_USER, config.JITBIT_PWD), data=in_data)
+            response = self._make_request('POST', url, data=in_data)
 
             if response.status_code == 200:
                 logger.info(f'[{key}] Successfully updated ticket at URL: {url}')
@@ -299,7 +337,7 @@ class JitbitApi(object):
         in_data = {'id': ticket_id}
 
         try:
-            response = requests.get(url, auth=(config.JITBIT_USER, config.JITBIT_PWD), data=in_data)
+            response = self._make_request('GET', url, data=in_data)
 
             if response.status_code == 200:
                 logger.info(f'[{key}] Successfully connected to URL: {url}')
@@ -327,7 +365,7 @@ class JitbitApi(object):
         logger.info(f'Fetching categories from: {url}')
 
         try:
-            response = requests.get(url, auth=(config.JITBIT_USER, config.JITBIT_PWD))
+            response = self._make_request('GET', url)
 
             if response.status_code == 200:
                 categories = response.json()
@@ -350,7 +388,7 @@ class JitbitApi(object):
         logger.info(f'Fetching users from: {url}')
 
         try:
-            response = requests.get(url, auth=(config.JITBIT_USER, config.JITBIT_PWD))
+            response = self._make_request('GET', url)
 
             if response.status_code == 200:
                 users = response.json()
@@ -380,7 +418,7 @@ class JitbitApi(object):
         }
 
         try:
-            response = requests.post(url, auth=(config.JITBIT_USER, config.JITBIT_PWD), data=in_data)
+            response = self._make_request('POST', url, data=in_data)
 
             if response.status_code == 200:
                 user_id = int(response.text)

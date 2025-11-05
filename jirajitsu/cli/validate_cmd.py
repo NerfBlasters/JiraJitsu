@@ -158,7 +158,7 @@ def validate_users(ctx, create_missing, output):
         console.print("[cyan]Fetching JitBit users...[/cyan]")
         jitbit_users = jitbit_api.get_users()
         jitbit_emails = {user.get('Email', '').lower() for user in jitbit_users if user.get('Email')}
-        console.print(f"Found {len(jitbit_users)} JitBit users\n")
+        console.print(f"Found {len(jitbit_users)} JitBit users ({len(jitbit_emails)} unique emails)\n")
 
         # Validate mappings
         report = []
@@ -234,7 +234,7 @@ def validate_users(ctx, create_missing, output):
         # Display summary
         console.print("\n[bold]Summary:[/bold]")
         console.print(f"Total JIRA users: {len(jira_users)}")
-        console.print(f"[green]Existing in JitBit: {len(jira_users) - len(missing_users)}[/green]")
+        console.print(f"[green]JIRA users with JitBit accounts: {len(jira_users) - len(missing_users)}[/green]")
 
         if missing_users and not create_missing:
             console.print(f"[red]Missing in JitBit: {len(missing_users)}[/red]")

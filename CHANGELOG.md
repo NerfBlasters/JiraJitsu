@@ -5,6 +5,64 @@ All notable changes to JiraJitsu will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2024-11-05
+
+### Added
+
+#### Authentication
+- **Token/API Key Authentication Support** for both JIRA and JitBit
+  - JIRA Cloud: Email + API token authentication
+  - JIRA Server/DC: Personal Access Token (PAT) authentication
+  - JitBit: Bearer token authentication
+  - Configurable via `JIRA_AUTH_METHOD` and `JITBIT_AUTH_METHOD` in `.env`
+  - New `_get_auth_config()` and `_make_request()` helper methods in both API classes
+
+#### Setup Improvements
+- **Enhanced Setup Wizard** now loads existing configuration as defaults
+  - Shows current values when updating configuration
+  - Smart password/token handling - only prompts when credentials changed
+  - Detects auth method switching and clears inappropriate defaults
+  - Added helpful tips for switching from basic to token auth
+  - URL normalization with duplicate protocol detection
+- New configuration loading functions: `load_env_config()` and `load_yaml_config()`
+
+#### Validation
+- Improved user validation output clarity
+  - Shows unique email count for JitBit users
+  - Clearer messaging: "JIRA users with JitBit accounts" vs "Existing in JitBit"
+  - Better permission error messages for restricted JIRA projects
+
+### Fixed
+
+#### Critical JitBit API Bugs
+- **Authorization endpoint**: Fixed HTTP method from GET to POST (per API documentation)
+- **AttachFile endpoint**: Fixed parameter name from `file` to `uploadFile` (files now attach correctly)
+- **User endpoint**: Fixed parameter name from `id` to `userId` (technician check now works)
+- **User endpoint**: Fixed response field from `IsTechie` to `IsTech` (correct technician detection)
+- **URL normalization**: Fixed duplicate protocol prefix handling (e.g., `http://http://` → `http://`)
+
+#### Setup Wizard Issues
+- Fixed setup prompting for overwrite with default=False (now default=True for updates)
+- Fixed username defaults when switching from basic to token authentication
+- Fixed empty username handling for PAT/token-only authentication
+
+### Changed
+- Improved error messages with status codes in API responses
+- Updated `.env.example` with comprehensive authentication examples
+- Enhanced logging for authentication method selection
+
+### Known Issues
+- `create_user()` method's `isTechie` parameter is ignored by JitBit API
+  - JitBit requires separate `AddCategoryTechPermission` API call to grant technician status
+  - Users created with `is_technician=True` will NOT have technician permissions
+  - Documented for future enhancement
+
+### Testing
+- Verified token authentication for both JIRA and JitBit
+- Tested file attachment with README.md (Ticket #92214445)
+- Confirmed technician status detection working correctly
+- Validated setup wizard with existing configurations
+
 ## [1.0.0] - 2024-11-03
 
 ### Added

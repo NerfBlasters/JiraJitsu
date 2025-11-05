@@ -23,6 +23,51 @@ class JiraApi(object):
     def __del__(self):
         pass
 
+    def _get_auth_config(self) -> tuple[dict | None, dict | None]:
+        """
+        Get authentication configuration based on auth method.
+        Returns (auth, headers) tuple.
+
+        - Basic auth: returns (auth=(user, pwd), None)
+        - Token with user (JIRA Cloud): returns (auth=(user, token), None)
+        - Token without user (PAT): returns (None, headers={'Authorization': 'Bearer token'})
+        """
+        auth_method = config.JIRA_AUTH_METHOD
+
+        if auth_method == 'token':
+            if config.JIRA_USER:
+                # JIRA Cloud: email + API token
+                logger.debug('Using JIRA Cloud authentication (email + API token)')
+                return (config.JIRA_USER, config.JIRA_TOKEN), None
+            else:
+                # JIRA Server/DC: Personal Access Token
+                logger.debug('Using JIRA Personal Access Token authentication')
+                return None, {'Authorization': f'Bearer {config.JIRA_TOKEN}'}
+        else:
+            # Basic authentication
+            logger.debug('Using JIRA basic authentication')
+            return (config.JIRA_USER, config.JIRA_PWD), None
+
+    def _make_request(self, method: str, url: str, **kwargs):
+        """
+        Make an authenticated request to JIRA API.
+        Automatically adds the correct authentication based on config.
+        """
+        auth, headers = self._get_auth_config()
+
+        # Merge any existing headers
+        if headers:
+            if 'headers' in kwargs:
+                kwargs['headers'].update(headers)
+            else:
+                kwargs['headers'] = headers
+
+        # Add auth if using basic/token auth (not Bearer)
+        if auth:
+            kwargs['auth'] = auth
+
+        return requests.request(method, url, **kwargs)
+
     """
     Used to test if user/pwd and URL are correct
     """
@@ -36,7 +81,7 @@ class JiraApi(object):
 
         try:
 
-            response = requests.get(url, auth=(config.JIRA_USER, config.JIRA_PWD))
+            response = self._make_request('GET', url)
 
             if response.status_code == 200:
                 logger.info(f'Successfully connected to URL: {url}')
@@ -61,7 +106,7 @@ class JiraApi(object):
 
         try:
 
-            response = requests.get(url, auth=(config.JIRA_USER, config.JIRA_PWD))
+            response = self._make_request('GET', url)
 
             if response.status_code == 200:
                 logger.info(f'[{filter_id}] Successfully connected to URL: {url}')
@@ -88,7 +133,7 @@ class JiraApi(object):
 
         try:
 
-            response = requests.get(url, auth=(config.JIRA_USER, config.JIRA_PWD))
+            response = self._make_request('GET', url)
 
             if response.status_code == 200:
                 logger.info(f'Successfully connected to URL: {url}')
@@ -111,7 +156,7 @@ class JiraApi(object):
 
         try:
 
-            response = requests.get(url, auth=(config.JIRA_USER, config.JIRA_PWD))
+            response = self._make_request('GET', url)
 
             if response.status_code == 200:
                 logger.info(f'[{key}] Successfully connected to URL: {url}')
@@ -154,7 +199,7 @@ class JiraApi(object):
             logger.info(f'[{key}] Connecting to  URL: {url} ...')
 
             try:
-                response = requests.get(url, auth=(config.JIRA_USER, config.JIRA_PWD), stream=True)
+                response = self._make_request('GET', url, stream=True)
 
                 if response.status_code == 200:
                     logger.info(f'[{key}] Successfully connected to URL: {url}')
@@ -187,7 +232,7 @@ class JiraApi(object):
         data_in = {'fields': {config.JIRA_TAG_FIELD: [tag]}}
 
         try:
-            response = requests.put(url, auth=(config.JIRA_USER, config.JIRA_PWD), json=data_in)
+            response = self._make_request('PUT', url, json=data_in)
 
             if response.status_code == 204:
                 logger.info(f'[{key}] Successfully connected to URL: {url}')
@@ -246,7 +291,7 @@ class JiraApi(object):
         logger.info(f'Fetching projects from: {url}')
 
         try:
-            response = requests.get(url, auth=(config.JIRA_USER, config.JIRA_PWD))
+            response = self._make_request('GET', url)
 
             if response.status_code == 200:
                 logger.info(f'Successfully fetched {len(response.json())} projects')
@@ -272,14 +317,24 @@ class JiraApi(object):
         logger.info(f'Counting issues in project: {project_key}')
 
         try:
-            response = requests.get(url, auth=(config.JIRA_USER, config.JIRA_PWD), params=params)
+            response = self._make_request('GET', url, params=params)
 
             if response.status_code == 200:
                 count = response.json().get('total', 0)
                 logger.info(f'Project {project_key} has {count} issues')
                 return count
             else:
-                logger.error(f'ERROR: Unable to count issues: {response.status_code}')
+                error_detail = ""
+                try:
+                    error_json = response.json()
+                    errors = error_json.get('errorMessages', [])
+                    if errors and "does not exist for the field 'project'" in str(errors):
+                        error_detail = " - Permission denied or project cannot be searched"
+                    else:
+                        error_detail = f" - {errors}"
+                except:
+                    error_detail = f" - {response.text[:200]}"
+                logger.error(f'ERROR: Unable to count issues: {response.status_code}{error_detail}')
                 return 0
 
         except Exception as e:
@@ -295,7 +350,7 @@ class JiraApi(object):
         logger.info(f'Fetching issue types from: {url}')
 
         try:
-            response = requests.get(url, auth=(config.JIRA_USER, config.JIRA_PWD))
+            response = self._make_request('GET', url)
 
             if response.status_code == 200:
                 logger.info(f'Successfully fetched {len(response.json())} issue types')
@@ -321,7 +376,7 @@ class JiraApi(object):
         logger.info(f'Counting issues of type: {issue_type}')
 
         try:
-            response = requests.get(url, auth=(config.JIRA_USER, config.JIRA_PWD), params=params)
+            response = self._make_request('GET', url, params=params)
 
             if response.status_code == 200:
                 count = response.json().get('total', 0)
@@ -344,7 +399,7 @@ class JiraApi(object):
         logger.info(f'Fetching filters from: {url}')
 
         try:
-            response = requests.get(url, auth=(config.JIRA_USER, config.JIRA_PWD))
+            response = self._make_request('GET', url)
 
             if response.status_code == 200:
                 logger.info(f'Successfully fetched {len(response.json())} filters')
@@ -371,7 +426,7 @@ class JiraApi(object):
         logger.info(f'Executing JQL query: {jql}')
 
         try:
-            response = requests.get(url, auth=(config.JIRA_USER, config.JIRA_PWD), params=params)
+            response = self._make_request('GET', url, params=params)
 
             if response.status_code == 200:
                 result = response.json()
@@ -412,7 +467,7 @@ class JiraApi(object):
         logger.info(f'Fetching all JIRA users from: {url}')
 
         try:
-            response = requests.get(url, auth=(config.JIRA_USER, config.JIRA_PWD), params=params)
+            response = self._make_request('GET', url, params=params)
 
             if response.status_code == 200:
                 users = response.json()
