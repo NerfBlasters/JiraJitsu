@@ -73,7 +73,7 @@ def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, crea
 
         # Initialize APIs
         jira_api = JiraApi()
-        process_data = ProcessData()
+        process_data = ProcessData(create_missing_users=create_missing_users)
 
         # Override category if specified
         if category_id:
@@ -81,6 +81,10 @@ def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, crea
             # This would need to be passed to the migration logic
             # For now, we'll note it's requested
             console.print("[yellow]Note: Category override requires code modification to fully implement[/yellow]")
+
+        # Show create missing users status
+        if create_missing_users:
+            console.print("[cyan]Auto-create missing users: ENABLED[/cyan]")
 
         # Determine which issues to migrate
         if issues:
@@ -149,13 +153,9 @@ def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, crea
         # Perform migration
         console.print("\n[bold green]Starting migration...[/bold green]\n")
 
-        # Note: This would ideally call a modified version of ProcessData
-        # that accepts these parameters. For now, we'll use the existing start() method
-        # with a note about the limitation.
-
-        if option_count > 0 or category_id or create_missing_users:
-            console.print("[yellow]Note: Some CLI options require modifying ProcessData class[/yellow]")
-            console.print("[yellow]Using standard migration with default config for now[/yellow]\n")
+        # Note: category_id override is not yet implemented
+        if option_count > 0 or category_id:
+            console.print("[yellow]Note: Some CLI options (category override) require additional implementation[/yellow]\n")
 
         process_data.start()
 

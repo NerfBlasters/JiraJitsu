@@ -142,7 +142,7 @@ def calculate_close_date(issue_info: dict, assignee_email: str | None) -> str | 
 
 class ProcessData(object):
 
-    def __init__(self):
+    def __init__(self, create_missing_users: bool = False):
         logger.info('Starting ProcessData ..')
         self.jitbit_api = JitbitApi()
         self.jira_api = JiraApi()
@@ -150,12 +150,30 @@ class ProcessData(object):
         # All assigned by is set to one user.
         self.default_assign_id = self.jitbit_api.get_user_id_by_email(config.JITBIT_DEFAULT_ASSIGN_EMAIL)
 
+        # User creation settings
+        self.create_missing_users = create_missing_users
+        self.created_users = []  # Track created users: [(email, first_name, last_name, user_id), ...]
+
         self.start_time = time.time()
 
     def __del__(self):
         end_time = time.time()
         exec_time = end_time - self.start_time
         logger.info(f'Total time to run: {exec_time} seconds.')
+
+        # Log created users to file
+        if self.created_users:
+            import csv
+            from datetime import datetime
+            log_file = os.path.join(config.LOG_DIR, f'created_users_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv')
+            try:
+                with open(log_file, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['Email', 'First Name', 'Last Name', 'JitBit User ID'])
+                    writer.writerows(self.created_users)
+                logger.info(f'Created {len(self.created_users)} users - logged to {log_file}')
+            except Exception as e:
+                logger.error(f'Failed to write created users log: {str(e)}')
 
     def start(self):
         try:
@@ -247,6 +265,36 @@ class ProcessData(object):
             logger.critical(str(e))
             raise
 
+    def _create_user_from_jira_info(self, jira_user_info: dict) -> int:
+        """
+        Create a JitBit user from JIRA user info
+        Returns user ID if successful, -1 otherwise
+        """
+        email = jira_user_info.get('emailAddress', '')
+        display_name = jira_user_info.get('displayName', '')
+
+        if not email:
+            logger.warning('Cannot create user without email address')
+            return -1
+
+        # Parse name from displayName
+        name_parts = display_name.split()
+        first_name = name_parts[0] if len(name_parts) > 0 else display_name
+        last_name = ' '.join(name_parts[1:]) if len(name_parts) > 1 else ''
+
+        # Create user
+        logger.info(f'Creating missing user: {first_name} {last_name} ({email})')
+        user_id = self.jitbit_api.create_user(email, first_name, last_name)
+
+        if user_id > 0:
+            # Track created user
+            self.created_users.append((email, first_name, last_name, user_id))
+            logger.info(f'Successfully created user {email} with ID {user_id}')
+        else:
+            logger.error(f'Failed to create user {email}')
+
+        return user_id
+
     def _migrate_to_jitbit(self, key: str, issue_info: dict):
 
         ticket_id = -1
@@ -265,11 +313,19 @@ class ProcessData(object):
             priority_id = 0
 
             # Status. JitBit has only New(1) and Closed(3) exposed via API
-            ## our statusname is Done - changed from 'closed'
-            if (issue_info['fields']['status']['name']).lower() == 'done':
-                status_id = 3
+            ## Map various JIRA closed statuses to JitBit closed (3)
+            jira_status = (issue_info['fields']['status']['name']).lower()
+            logger.info(f'[{key}] JIRA status: {jira_status}')
+
+            # Statuses that indicate ticket is closed/resolved
+            closed_statuses = ['done', 'closed', 'resolved', 'complete', 'completed', 'fixed', 'canceled', 'cancelled']
+
+            if jira_status in closed_statuses:
+                status_id = 3  # Closed in JitBit
+                logger.info(f'[{key}] Mapping to JitBit Closed (3)')
             else:
-                status_id = 1
+                status_id = 1  # New/Open in JitBit
+                logger.info(f'[{key}] Mapping to JitBit New (1)')
 
             # Created by
             # By default this will be the person creating the ticket.
@@ -280,6 +336,19 @@ class ProcessData(object):
             logger.debug(f'Variable created_by_email is [{created_by_email}]')
             created_by = self.jitbit_api.get_user_id_by_email(created_by_email)
             logger.debug(f'Variable created_by is [{created_by}]')
+
+            # Auto-create user if missing and flag is set
+            if created_by <= 0 and self.create_missing_users:
+                logger.info(f'[{key}] Creator {created_by_email} not found, attempting to create')
+                created_by = self._create_user_from_jira_info(issue_info['fields']['creator'])
+                if created_by <= 0:
+                    # Fall back to default if creation failed
+                    logger.warning(f'[{key}] Failed to create creator, using default user')
+                    created_by = self.default_assign_id
+            elif created_by <= 0:
+                # No auto-create, use default
+                logger.warning(f'[{key}] Creator {created_by_email} not found, using default user')
+                created_by = self.default_assign_id
 
             # Get original Jira assignee info (before any JitBit mapping)
             # Used for: close date calculation AND populating the "Jira Assignee" custom field
@@ -302,12 +371,23 @@ class ProcessData(object):
                 assign_to_id = self.jitbit_api.get_user_id_by_email(assign_to_email)
                 logger.debug(f'Variable assign_to_id is [{assign_to_id}]')
 
+                # Auto-create user if missing and flag is set
+                if assign_to_id <= 0 and self.create_missing_users:
+                    logger.info(f'[{key}] Assignee {assign_to_email} not found, attempting to create')
+                    assign_to_id = self._create_user_from_jira_info(issue_info['fields']['assignee'])
+
                 # Check if user has technician flag
                 if assign_to_id > 0:
                     is_technician = self.jitbit_api.get_user_is_technician(assign_to_id)
                     if not is_technician:
-                        logger.warning(f'User {assign_to_id} ({assign_to_email}) is not a technician, using default assignee')
-                        assign_to_id = self.default_assign_id
+                        logger.warning(f'User {assign_to_id} ({assign_to_email}) is not a technician, attempting to grant permissions')
+                        # Try to grant technician permission for this category
+                        if self.jitbit_api.add_category_tech_permission(assign_to_id, category_id):
+                            logger.info(f'Successfully granted technician permission to user {assign_to_id} for category {category_id}')
+                            # User is now a technician, can keep as assignee
+                        else:
+                            logger.warning(f'Failed to grant technician permission, using default assignee')
+                            assign_to_id = self.default_assign_id
                 else:
                     logger.warning(f'Invalid user ID for {assign_to_email}, using default assignee')
                     assign_to_id = self.default_assign_id
@@ -343,8 +423,9 @@ class ProcessData(object):
 
             if ticket_id > 0:
 
-                # Update ticket with date and assignee
+                # Update ticket with creator, date, and assignee
                 update_params = {
+                    'userId': created_by,  # Ticket creator/from
                     'assignedUserId': assign_to_id,
                     'date': date_created
                 }
@@ -395,7 +476,11 @@ class ProcessData(object):
                 comment_author = comment['updateAuthor'].get('emailAddress')
                 if comment_author:
                     comment_author_id = self.jitbit_api.get_user_id_by_email(comment_author)
-                    # If user lookup fails, fall back to default
+                    # Auto-create user if missing and flag is set
+                    if comment_author_id <= 0 and self.create_missing_users:
+                        logger.info(f'[{key}] Comment author {comment_author} not found, attempting to create')
+                        comment_author_id = self._create_user_from_jira_info(comment['updateAuthor'])
+                    # If user lookup or creation failed, fall back to default
                     if comment_author_id <= 0:
                         comment_author_id = self.default_assign_id
                         logger.debug(f'Comment author lookup failed for {comment_author}, using default user')

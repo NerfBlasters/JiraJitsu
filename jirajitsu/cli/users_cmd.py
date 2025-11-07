@@ -94,7 +94,7 @@ def sync_users(ctx, dry_run, technician):
                     created_count += 1
                 else:
                     try:
-                        user_id = jitbit_api.create_user(email, first_name, last_name, is_technician=technician)
+                        user_id = jitbit_api.create_user(email, first_name, last_name)
                         if user_id > 0:
                             console.print(f"[green]Created: {display_name} ({email}) - ID: {user_id}[/green]")
                             created_count += 1
@@ -249,11 +249,12 @@ def create_user(ctx, email, first_name, last_name, technician):
 
         # Create user
         console.print(f"[cyan]Creating user: {first_name} {last_name} ({email})[/cyan]")
-        user_id = jitbit_api.create_user(email, first_name, last_name, is_technician=technician)
+        user_id = jitbit_api.create_user(email, first_name, last_name)
 
         if user_id > 0:
-            tech_status = "technician" if technician else "regular user"
-            console.print(f"[green]✓ Successfully created {tech_status} with ID: {user_id}[/green]")
+            console.print(f"[green]✓ Successfully created user with ID: {user_id}[/green]")
+            if technician:
+                console.print(f"[yellow]Note: Technician permissions must be assigned per-category via JitBit web interface[/yellow]")
         else:
             console.print(f"[red]✗ Failed to create user[/red]")
             sys.exit(1)

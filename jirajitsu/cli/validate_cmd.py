@@ -212,7 +212,7 @@ def validate_users(ctx, create_missing, output, limit):
 
                         # Create user
                         console.print(f"[yellow]Creating user: {email}[/yellow]")
-                        new_id = jitbit_api.create_user(email, first_name, last_name, is_technician=False)
+                        new_id = jitbit_api.create_user(email, first_name, last_name)
 
                         report.append({
                             'JIRA User': display_name,
