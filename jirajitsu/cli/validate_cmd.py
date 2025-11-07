@@ -133,8 +133,9 @@ def validate_config(ctx):
 @validate.command('users')
 @click.option('--create-missing', is_flag=True, help='Create missing JitBit users')
 @click.option('--output', type=click.Path(), help='Save report to CSV file')
+@click.option('--limit', type=int, default=10, help='Number of items to display (0 for all, default: 10)')
 @click.pass_context
-def validate_users(ctx, create_missing, output):
+def validate_users(ctx, create_missing, output, limit):
     """
     Validate that JIRA users exist in JitBit
 
@@ -239,17 +240,19 @@ def validate_users(ctx, create_missing, output):
         if missing_users and not create_missing:
             console.print(f"[red]Missing in JitBit: {len(missing_users)}[/red]")
             console.print("\n[yellow]Missing users:[/yellow]")
-            for name, email in missing_users[:10]:  # Show first 10
+            display_limit = len(missing_users) if limit == 0 else min(limit, len(missing_users))
+            for name, email in missing_users[:display_limit]:
                 console.print(f"  - {name} ({email})")
-            if len(missing_users) > 10:
-                console.print(f"  ... and {len(missing_users) - 10} more")
+            if limit > 0 and len(missing_users) > limit:
+                console.print(f"  [dim]... and {len(missing_users) - limit} more (use --limit 0 to show all)[/dim]")
 
         if non_technician_users:
             console.print(f"\n[yellow]Non-technician users (cannot be assigned): {len(non_technician_users)}[/yellow]")
-            for name, email in non_technician_users[:10]:
+            display_limit = len(non_technician_users) if limit == 0 else min(limit, len(non_technician_users))
+            for name, email in non_technician_users[:display_limit]:
                 console.print(f"  - {name} ({email})")
-            if len(non_technician_users) > 10:
-                console.print(f"  ... and {len(non_technician_users) - 10} more")
+            if limit > 0 and len(non_technician_users) > limit:
+                console.print(f"  [dim]... and {len(non_technician_users) - limit} more (use --limit 0 to show all)[/dim]")
 
         # Save report if requested
         if output:
@@ -271,8 +274,9 @@ def validate_users(ctx, create_missing, output):
 @click.option('--jql', type=str, help='JQL query to validate')
 @click.option('--project', type=str, help='Project key to validate')
 @click.option('--range', 'issue_range', type=str, help='Issue range (e.g., 100:200)')
+@click.option('--limit', type=int, default=20, help='Number of issues to display (0 for all, default: 20)')
 @click.pass_context
-def validate_filter(ctx, filter_id, jql, project, issue_range):
+def validate_filter(ctx, filter_id, jql, project, issue_range, limit):
     """
     Preview issues that would be migrated
 
@@ -316,12 +320,13 @@ def validate_filter(ctx, filter_id, jql, project, issue_range):
 
         console.print(f"[green]Found {len(issues)} issues[/green]\n")
 
-        # Show first 20 issues
-        table = Table(title=f"Preview: First {min(20, len(issues))} Issues")
+        # Show issues up to limit
+        display_limit = len(issues) if limit == 0 else min(limit, len(issues))
+        table = Table(title=f"Preview: {display_limit} of {len(issues)} Issues")
         table.add_column("Issue Key", style="cyan")
         table.add_column("Status", style="green")
 
-        for issue in issues[:20]:
+        for issue in issues[:display_limit]:
             key = issue.get('key', 'N/A')
 
             # Fetch full details for status
@@ -332,8 +337,8 @@ def validate_filter(ctx, filter_id, jql, project, issue_range):
 
         console.print(table)
 
-        if len(issues) > 20:
-            console.print(f"\n[yellow]... and {len(issues) - 20} more issues[/yellow]")
+        if limit > 0 and len(issues) > limit:
+            console.print(f"\n[dim]... and {len(issues) - limit} more issues (use --limit 0 to show all)[/dim]")
 
         console.print(f"\n[bold]Total issues that would be migrated: {len(issues)}[/bold]")
 

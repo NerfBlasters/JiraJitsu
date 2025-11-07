@@ -25,8 +25,9 @@ console = Console()
 @click.option('--category-id', type=int, help='Override JitBit destination category ID')
 @click.option('--create-missing-users', is_flag=True, help='Automatically create missing JitBit users')
 @click.option('--dry-run', is_flag=True, help='Show what would be migrated without migrating')
+@click.option('--limit', type=int, default=20, help='Number of issues to display in dry-run (0 for all, default: 20)')
 @click.pass_context
-def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, create_missing_users, dry_run):
+def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, create_missing_users, dry_run, limit):
     """
     Migrate issues from JIRA to JitBit
 
@@ -127,11 +128,12 @@ def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, crea
         if dry_run:
             # Show preview
             console.print("[bold]Preview of issues that would be migrated:[/bold]\n")
-            for i, issue in enumerate(issues[:20], 1):
+            display_limit = len(issues) if limit == 0 else min(limit, len(issues))
+            for i, issue in enumerate(issues[:display_limit], 1):
                 console.print(f"  {i}. {issue['key']}")
 
-            if len(issues) > 20:
-                console.print(f"  ... and {len(issues) - 20} more")
+            if limit > 0 and len(issues) > limit:
+                console.print(f"  [dim]... and {len(issues) - limit} more (use --limit 0 to show all)[/dim]")
 
             console.print(f"\n[bold yellow]DRY RUN COMPLETE - No migration performed[/bold yellow]")
             console.print(f"[yellow]Remove --dry-run flag to perform actual migration[/yellow]")

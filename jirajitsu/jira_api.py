@@ -415,27 +415,59 @@ class JiraApi(object):
 
     def get_issues_by_jql(self, jql: str, max_results: int = 10000, fields: str = 'key') -> dict:
         """
-        Generic JQL query method for flexible issue searching
+        Generic JQL query method for flexible issue searching.
+        Automatically handles pagination for queries returning >1000 issues.
+
+        Note: JIRA API limits results to 1000 per request. This method paginates
+        automatically to fetch all results up to max_results.
         """
         url = config.JIRA_API_URL + '/search'
-        params = {
-            'jql': jql,
-            'fields': fields,
-            'maxResults': max_results
-        }
 
         logger.info(f'Executing JQL query: {jql}')
 
-        try:
-            response = self._make_request('GET', url, params=params)
+        all_issues = []
+        start_at = 0
+        page_size = min(1000, max_results)  # JIRA API max is 1000 per request
+        total_results = None
 
-            if response.status_code == 200:
-                result = response.json()
-                logger.info(f'JQL query returned {len(result.get("issues", []))} issues')
-                return result
-            else:
-                logger.error(f'ERROR: JQL query failed: {response.status_code}')
-                return {'issues': [], 'total': 0}
+        try:
+            while len(all_issues) < max_results:
+                params = {
+                    'jql': jql,
+                    'fields': fields,
+                    'maxResults': page_size,
+                    'startAt': start_at
+                }
+
+                response = self._make_request('GET', url, params=params)
+
+                if response.status_code == 200:
+                    result = response.json()
+                    issues = result.get('issues', [])
+                    total_results = result.get('total', 0)
+
+                    if not issues:
+                        # No more results
+                        break
+
+                    all_issues.extend(issues)
+                    logger.debug(f'Fetched {len(issues)} issues (total so far: {len(all_issues)}/{total_results})')
+
+                    # Check if we've reached the end
+                    if len(all_issues) >= total_results or len(issues) < page_size:
+                        break
+
+                    start_at += len(issues)
+                else:
+                    logger.error(f'ERROR: JQL query failed: {response.status_code}')
+                    return {'issues': [], 'total': 0}
+
+            # Trim to max_results if we fetched more
+            if len(all_issues) > max_results:
+                all_issues = all_issues[:max_results]
+
+            logger.info(f'JQL query returned {len(all_issues)} issues (total available: {total_results})')
+            return {'issues': all_issues, 'total': total_results}
 
         except Exception as e:
             logger.critical(str(e))
@@ -444,13 +476,24 @@ class JiraApi(object):
     def get_issues_by_project(self, project: str, start_num: int | None = None,
                              end_num: int | None = None, max_results: int = 10000) -> dict:
         """
-        Get issues from a specific project, optionally filtered by issue number range
+        Get issues from a specific project, optionally filtered by issue number range.
+
         Example: project='RFM', start_num=100, end_num=200 returns RFM-100 through RFM-200
+
+        Note: Uses JQL issuekey comparison which works even if start issue doesn't exist.
+        However, JIRA uses lexicographic (string) comparison for issue keys, not numeric.
+        This means ISD-10 comes before ISD-2 alphabetically. Range queries work best
+        when all issues in the range have the same number of digits.
+
+        If range queries don't work as expected, use --jql instead:
+            jirajitsu migrate --jql "project = ISD AND created >= 2024-01-01"
         """
         if start_num and end_num:
             jql = f'project = {project} AND issuekey >= {project}-{start_num} AND issuekey <= {project}-{end_num}'
+            logger.info(f'Generated JQL for range {project}-{start_num} to {project}-{end_num}: {jql}')
         else:
             jql = f'project = {project}'
+            logger.info(f'Generated JQL for all issues in {project}')
 
         return self.get_issues_by_jql(jql, max_results)
 
