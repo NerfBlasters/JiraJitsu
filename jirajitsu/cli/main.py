@@ -28,6 +28,7 @@ def cli(ctx, verbose, quiet, log_level):
       test       - Test migration of a single issue
       users      - User management commands
       config     - Configuration management
+      jitapi     - Manual JitBit API testing
 
     \b
     Examples:
@@ -55,7 +56,8 @@ from . import (
     validate_cmd,
     users_cmd,
     migrate_cmd,
-    test_cmd
+    test_cmd,
+    jitapi_cmd
 )
 
 # Register subcommands
@@ -66,6 +68,7 @@ cli.add_command(validate_cmd.validate)
 cli.add_command(users_cmd.users)
 cli.add_command(migrate_cmd.migrate)
 cli.add_command(test_cmd.test)
+cli.add_command(jitapi_cmd.jitapi)
 
 
 def main():

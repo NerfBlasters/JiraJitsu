@@ -7,6 +7,7 @@ from rich.table import Table
 import sys
 import os
 from pathlib import Path
+import yaml
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
@@ -103,18 +104,29 @@ def set_config(ctx, key, value):
 
     Updates values in .env or config.yml as appropriate.
 
-    Example:
-        jirajitsu config set JIRA_FILTER_ID 10001
+    Examples:
+        jirajitsu config set jira_filter_id 10001
+        jirajitsu config set jira_tag_field customfield_10800
+        jirajitsu config set JIRA_USER myuser
     """
 
     console.print(f"[bold blue]Updating Configuration[/bold blue]\n")
 
     # Determine which file to update
-    env_keys = ['JIRA_API_URL', 'JIRA_USER', 'JIRA_PWD', 'JITBIT_API_URL', 'JITBIT_USER', 'JITBIT_PWD']
+    env_keys = ['JIRA_API_URL', 'JIRA_USER', 'JIRA_PWD', 'JIRA_TOKEN', 'JIRA_AUTH_METHOD',
+                'JITBIT_API_URL', 'JITBIT_USER', 'JITBIT_PWD', 'JITBIT_TOKEN', 'JITBIT_AUTH_METHOD']
+
+    yaml_keys = ['jira_filter_id', 'jira_tag_field', 'jitbit_migrate_category_id',
+                 'jitbit_delete_category_id', 'jitbit_default_assign_email',
+                 'fetch_attachments', 'attachment_folder', 'log_dir',
+                 'log_max_bytes', 'log_backup_count']
 
     base_dir = Path(__file__).parent.parent.parent
     env_path = base_dir / '.env'
     config_path = base_dir / 'config' / 'config.yml'
+
+    # Normalize key to lowercase for yaml comparison
+    key_lower = key.lower()
 
     if key.upper() in env_keys:
         # Update .env file
@@ -130,32 +142,64 @@ def set_config(ctx, key, value):
         # Update or add the key
         key_found = False
         new_lines = []
+        key_upper = key.upper()
         for line in lines:
-            if line.strip().startswith(f'{key}='):
-                new_lines.append(f'{key}={value}\n')
+            if line.strip().startswith(f'{key_upper}='):
+                new_lines.append(f'{key_upper}={value}\n')
                 key_found = True
             else:
                 new_lines.append(line)
 
         if not key_found:
-            new_lines.append(f'\n{key}={value}\n')
+            new_lines.append(f'\n{key_upper}={value}\n')
 
         # Write back
         with open(env_path, 'w') as f:
             f.writelines(new_lines)
 
-        console.print(f"[green]✓ Updated {key} in .env[/green]")
+        console.print(f"[green]✓ Updated {key_upper} in .env[/green]")
         console.print("[yellow]Note: Restart required for changes to take effect[/yellow]")
 
-    else:
+    elif key_lower in yaml_keys:
         # Update config.yml file
-        console.print(f"[yellow]Updating config.yml values is not yet supported via CLI[/yellow]")
-        console.print(f"[yellow]Please edit {config_path} manually[/yellow]")
-        console.print(f"\n[cyan]Add or update this line:[/cyan]")
+        if not config_path.exists():
+            console.print(f"[red]config.yml file not found at {config_path}[/red]")
+            console.print("[yellow]Run 'jirajitsu setup' first[/yellow]")
+            sys.exit(1)
 
-        # Convert key to yaml format
-        yaml_key = key.lower().replace('_', '_')
-        console.print(f"{yaml_key}: {value}")
+        # Read current config.yml
+        with open(config_path, 'r') as f:
+            config_data = yaml.safe_load(f) or {}
+
+        # Convert value to appropriate type
+        yaml_value = value
+        if key_lower in ['jira_filter_id', 'jitbit_migrate_category_id', 'jitbit_delete_category_id',
+                         'log_max_bytes', 'log_backup_count']:
+            try:
+                yaml_value = int(value)
+            except ValueError:
+                console.print(f"[red]Error: {key} requires an integer value[/red]")
+                sys.exit(1)
+
+        # Update the value
+        config_data[key_lower] = yaml_value
+
+        # Write back
+        with open(config_path, 'w') as f:
+            yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+
+        console.print(f"[green]✓ Updated {key_lower} in config.yml[/green]")
+        console.print(f"[cyan]New value: {yaml_value}[/cyan]")
+
+    else:
+        console.print(f"[red]Unknown configuration key: {key}[/red]")
+        console.print("\n[cyan]Valid .env keys:[/cyan]")
+        for k in env_keys:
+            console.print(f"  - {k}")
+        console.print("\n[cyan]Valid config.yml keys:[/cyan]")
+        for k in yaml_keys:
+            console.print(f"  - {k}")
+        sys.exit(1)
 
 
 @config_cmd.command('validate')

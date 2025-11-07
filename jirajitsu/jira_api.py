@@ -151,7 +151,8 @@ class JiraApi(object):
     def get_issue_info(self, key: str) -> tuple[bool, dict | None]:
 
         # Check URL and user authentication
-        url = config.JIRA_API_URL + '/issue/' + key
+        # Expand changelog to get assignee change history
+        url = config.JIRA_API_URL + '/issue/' + key + '?expand=changelog'
         logger.info(f'[{key}] Connecting to  URL: {url} ...')
 
         try:

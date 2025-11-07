@@ -2,6 +2,7 @@
 import os
 import time
 import logging
+from datetime import datetime, timedelta
 from . import config
 import progressbar
 from .argument_parser import ArgumentParser
@@ -10,6 +11,134 @@ from .jitbit_api import JitbitApi
 from .jira_api import JiraApi
 
 logger = logging.getLogger(config.LOG_ALIAS)
+
+
+def convert_utc_to_central(utc_timestamp: str) -> str:
+    """
+    Convert UTC timestamp to Central Time (UTC-5).
+
+    Args:
+        utc_timestamp: ISO 8601 timestamp string (e.g., '2024-01-01T10:00:00.000+0000')
+
+    Returns:
+        Central Time timestamp in same format
+    """
+    try:
+        # Parse the UTC timestamp (handle both with and without milliseconds)
+        if '.' in utc_timestamp:
+            # Has milliseconds: 2024-01-01T10:00:00.000+0000
+            dt = datetime.strptime(utc_timestamp[:23], '%Y-%m-%dT%H:%M:%S.%f')
+        else:
+            # No milliseconds: 2024-01-01T10:00:00+0000
+            dt = datetime.strptime(utc_timestamp[:19], '%Y-%m-%dT%H:%M:%S')
+
+        # Subtract 5 hours for Central Time
+        central_dt = dt - timedelta(hours=5)
+
+        # Format back to ISO 8601 (maintain original format)
+        if '.' in utc_timestamp:
+            return central_dt.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + '-0500'
+        else:
+            return central_dt.strftime('%Y-%m-%dT%H:%M:%S') + '-0500'
+    except Exception as e:
+        logger.error(f'Error converting timestamp {utc_timestamp}: {str(e)}')
+        return utc_timestamp  # Return original on error
+
+
+def calculate_start_date(issue_info: dict) -> str | None:
+    """
+    Calculate the start date for a ticket based on:
+    1. First comment timestamp (if exists)
+    2. First assignee change from changelog (if exists)
+    3. Resolution date as fallback
+
+    Args:
+        issue_info: Jira issue information dictionary
+
+    Returns:
+        Central Time timestamp string or None if cannot be determined
+    """
+    try:
+        # Priority 1: First comment timestamp
+        comments = issue_info.get('fields', {}).get('comment', {}).get('comments', [])
+        if comments:
+            first_comment_time = comments[0].get('created') or comments[0].get('updated')
+            if first_comment_time:
+                logger.debug(f'Start date from first comment: {first_comment_time}')
+                return convert_utc_to_central(first_comment_time)
+
+        # Priority 2: First assignee change from changelog
+        changelog = issue_info.get('changelog', {}).get('histories', [])
+        for history in changelog:
+            items = history.get('items', [])
+            for item in items:
+                if item.get('field') == 'assignee':
+                    assignee_timestamp = history.get('created')
+                    if assignee_timestamp:
+                        logger.debug(f'Start date from assignee change: {assignee_timestamp}')
+                        return convert_utc_to_central(assignee_timestamp)
+
+        # Priority 3: Resolution date as fallback
+        resolution_date = issue_info.get('fields', {}).get('resolutiondate')
+        if resolution_date:
+            logger.debug(f'Start date from resolution date: {resolution_date}')
+            return convert_utc_to_central(resolution_date)
+
+        logger.warning('Unable to calculate start date, no comments or assignee history found')
+        return None
+
+    except Exception as e:
+        logger.error(f'Error calculating start date: {str(e)}')
+        return None
+
+
+def calculate_close_date(issue_info: dict, assignee_email: str | None) -> str | None:
+    """
+    Calculate the close date for a ticket based on:
+    1. Last comment from current assignee (if exists)
+    2. Resolution date as fallback
+
+    Only calculates for closed/resolved tickets.
+
+    Args:
+        issue_info: Jira issue information dictionary
+        assignee_email: Email of the current assignee
+
+    Returns:
+        Central Time timestamp string or None if ticket is open or cannot be determined
+    """
+    try:
+        # Only calculate closeDate for closed/resolved tickets
+        status = issue_info.get('fields', {}).get('status', {}).get('name', '').lower()
+        if status not in ['done', 'closed', 'resolved']:
+            logger.debug(f'Ticket status is "{status}", not setting close date (ticket is open)')
+            return None
+
+        # Priority 1: Last comment from current assignee
+        if assignee_email:
+            comments = issue_info.get('fields', {}).get('comment', {}).get('comments', [])
+            # Search backwards through comments to find last comment from assignee
+            for comment in reversed(comments):
+                author_email = comment.get('updateAuthor', {}).get('emailAddress')
+                if author_email == assignee_email:
+                    comment_time = comment.get('updated') or comment.get('created')
+                    if comment_time:
+                        logger.debug(f'Close date from assignee comment: {comment_time}')
+                        return convert_utc_to_central(comment_time)
+
+        # Priority 2: Resolution date as fallback
+        resolution_date = issue_info.get('fields', {}).get('resolutiondate')
+        if resolution_date:
+            logger.debug(f'Close date from resolution date: {resolution_date}')
+            return convert_utc_to_central(resolution_date)
+
+        logger.warning('Ticket is closed but unable to calculate close date')
+        return None
+
+    except Exception as e:
+        logger.error(f'Error calculating close date: {str(e)}')
+        return None
+
 
 class ProcessData(object):
 
@@ -152,7 +281,12 @@ class ProcessData(object):
             created_by = self.jitbit_api.get_user_id_by_email(created_by_email)
             logger.debug(f'Variable created_by is [{created_by}]')
 
-            # Assigned to
+            # Get original Jira assignee email for close date calculation (before any JitBit mapping)
+            jira_assignee_email = None
+            if issue_info['fields']['assignee'] and issue_info['fields']['assignee'].get('emailAddress'):
+                jira_assignee_email = issue_info['fields']['assignee']['emailAddress']
+
+            # Assigned to - determine JitBit assignee
             # Check if assignee exists and get their user ID
             if issue_info['fields']['assignee'] is None or issue_info['fields']['assignee'].get('emailAddress') is None:
                 assign_to_id = self.default_assign_id
@@ -175,22 +309,38 @@ class ProcessData(object):
                     logger.warning(f'Invalid user ID for {assign_to_email}, using default assignee')
                     assign_to_id = self.default_assign_id
 
-            #Created timestamp
-            #Goes in /updateticket as 'date', post_set_assignee uses the updateticket call
-            date_created = issue_info['fields']['created']
+            # Created timestamp - convert to Central Time
+            # Goes in /updateticket as 'date'
+            date_created = convert_utc_to_central(issue_info['fields']['created'])
+            logger.debug(f'Created date (Central Time): {date_created}')
 
+            # Calculate startDate and closeDate based on ORIGINAL Jira data
+            start_date = calculate_start_date(issue_info)
+            close_date = calculate_close_date(issue_info, jira_assignee_email)
 
             # Ready to create the ticket
             ticket_id = int(self.jitbit_api.post_ticket(key, category_id, subject, body, priority_id, created_by, assign_to_id))
             if ticket_id > 0:
 
-                self.jitbit_api.post_set_assignee(key, ticket_id, assign_to_id, date_created)
+                # Update ticket with date and assignee
+                update_params = {
+                    'assignedUserId': assign_to_id,
+                    'date': date_created
+                }
+
+                self.jitbit_api.post_update_ticket(key, ticket_id, **update_params)
 
                 self._add_comments(key, ticket_id, issue_info)
                 self._add_attachments(key, ticket_id, issue_info)
 
-                # Status should be the last to be set. Otherwise JitBit will change it.
+                # Set status first
                 self.jitbit_api.post_set_ticket_status(key, ticket_id, status_id)
+
+                # Then set closeDate AFTER status is set (for closed tickets only)
+                # JitBit may require the ticket to already be closed before accepting a historical closeDate
+                if close_date:
+                    logger.debug(f'Setting closeDate after status change: {close_date}')
+                    self.jitbit_api.post_update_ticket(key, ticket_id, closeDate=close_date)
 
                 # We update the issue on the JIRA side if the migration was successful.
                 # We use the 'Tag' field in JIRA for this

@@ -204,7 +204,9 @@ class JitbitApi(object):
                      'subject': subject,
                      'body': body,
                      'priorityId': priority_id,
-                     'userId': created_by
+                     'userId': created_by,
+                     'suppressConfirmation': True,  # Skip sending user confirmation email
+                     'dueDate': ''  # Empty string for dueDate
                   }
 
         logger.debug(in_data)
@@ -307,7 +309,8 @@ class JitbitApi(object):
                 return user_id
 
             else:
-                logger.critical(f'[{email}] ERROR: Unable to connect to URL: {url}')
+                logger.critical(f'[{email}] ERROR: Unable to connect to URL: {url} - Status {response.status_code}')
+                logger.debug(f'Response body: {response.text}')
                 # Return default user ID
                 default_response = self._make_request(
                     'GET',
@@ -316,6 +319,8 @@ class JitbitApi(object):
                 )
                 if default_response.status_code == 200:
                     return default_response.json()["UserID"]
+                else:
+                    logger.error(f'Default user lookup also failed with status {default_response.status_code}')
                 return -1
 
         except Exception as e:
@@ -380,6 +385,7 @@ class JitbitApi(object):
         Accepts any valid UpdateTicket API parameters as kwargs:
         - assignedUserId: Assign to user
         - date: Created date
+        - closeDate: Closed date (only for resolved/closed tickets)
         - categoryId or newCategoryId: Category
         - priorityId: Priority
         - statusId: Status
@@ -389,7 +395,7 @@ class JitbitApi(object):
         - body: Body
         - timeSpentInSeconds: Time spent
 
-        Example: post_update_ticket('KEY-1', 123, assignedUserId=5, date='2023-01-01')
+        Example: post_update_ticket('KEY-1', 123, assignedUserId=5, date='2023-01-01', closeDate='2023-01-05')
         """
         ret = False
         url = config.JITBIT_API_URL + '/UpdateTicket'
@@ -512,15 +518,17 @@ class JitbitApi(object):
         """
         Create a new JitBit user
         Returns user ID if successful, -1 otherwise
+
+        Note: is_technician parameter is ignored as JitBit assigns technician permissions
+              per-category via AddCategoryTechPermission API, not during user creation.
         """
-        url = config.JITBIT_API_URL + '/User'
+        url = config.JITBIT_API_URL + '/CreateUser'
         logger.info(f'Creating user: {email}')
 
         in_data = {
             'email': email,
             'firstName': first_name,
-            'lastName': last_name,
-            'isTechie': is_technician
+            'lastName': last_name
         }
 
         try:
@@ -532,6 +540,7 @@ class JitbitApi(object):
                 return user_id
             else:
                 logger.error(f'ERROR: Unable to create user: {response.status_code}')
+                logger.error(f'Response: {response.text}')
                 return -1
 
         except Exception as e:
