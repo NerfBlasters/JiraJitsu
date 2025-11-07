@@ -164,7 +164,7 @@ def validate_users_cmd(ctx, output):
             if email in jitbit_emails:
                 stats['exists'] += 1
                 jitbit_user = jitbit_emails[email]
-                is_tech = jitbit_user.get('IsTechie', False)
+                is_tech = jitbit_user.get('IsTech', False)  # Fixed: API returns 'IsTech' not 'IsTechie'
 
                 if is_tech:
                     stats['technician'] += 1
