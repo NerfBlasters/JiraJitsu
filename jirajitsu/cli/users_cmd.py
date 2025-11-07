@@ -145,7 +145,10 @@ def validate_users_cmd(ctx, output):
 
         # Validate
         report = []
-        stats = {'exists': 0, 'missing': 0, 'no_email': 0, 'technician': 0, 'non_technician': 0}
+        stats = {'exists': 0, 'missing': 0, 'no_email': 0}
+
+        # Track unique JitBit admins (to avoid counting same JitBit user multiple times)
+        admin_user_ids = set()
 
         for jira_user in jira_users:
             email = jira_user.get('emailAddress', '').lower()
@@ -157,25 +160,25 @@ def validate_users_cmd(ctx, output):
                     'JIRA User': display_name,
                     'Email': 'N/A',
                     'JitBit Status': 'No Email',
-                    'Technician': 'N/A'
+                    'Admin': 'N/A'
                 })
                 continue
 
             if email in jitbit_emails:
                 stats['exists'] += 1
                 jitbit_user = jitbit_emails[email]
-                is_tech = jitbit_user.get('IsTech', False)  # Fixed: API returns 'IsTech' not 'IsTechie'
+                user_id = jitbit_user.get('UserID')
+                is_admin = jitbit_user.get('IsAdmin', False)
 
-                if is_tech:
-                    stats['technician'] += 1
-                else:
-                    stats['non_technician'] += 1
+                # Track unique admin users by UserID
+                if is_admin and user_id:
+                    admin_user_ids.add(user_id)
 
                 report.append({
                     'JIRA User': display_name,
                     'Email': email,
                     'JitBit Status': 'Exists',
-                    'Technician': 'Yes' if is_tech else 'No'
+                    'Admin': 'Yes' if is_admin else 'No'
                 })
             else:
                 stats['missing'] += 1
@@ -183,8 +186,11 @@ def validate_users_cmd(ctx, output):
                     'JIRA User': display_name,
                     'Email': email,
                     'JitBit Status': 'Missing',
-                    'Technician': 'N/A'
+                    'Admin': 'N/A'
                 })
+
+        # Set admin count to unique admin users
+        stats['admin'] = len(admin_user_ids)
 
         # Display results
         table = Table(title="User Mapping Summary")
@@ -194,8 +200,7 @@ def validate_users_cmd(ctx, output):
         table.add_row("Total JIRA Users", str(len(jira_users)))
         table.add_row("Existing in JitBit", str(stats['exists']))
         table.add_row("Missing in JitBit", str(stats['missing']))
-        table.add_row("Technicians", str(stats['technician']))
-        table.add_row("Non-Technicians", str(stats['non_technician']))
+        table.add_row("JitBit Admins", str(stats['admin']))
         table.add_row("No Email", str(stats['no_email']))
 
         console.print(table)
