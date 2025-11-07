@@ -31,6 +31,7 @@ class JitbitApi(object):
         # Maps email -> JitBit user_id and user_id -> is_technician status
         self._jitbit_user_id_cache: dict[str, int] = {}  # email (lowercase) -> JitBit user_id
         self._jitbit_technician_cache: dict[int, bool] = {}  # JitBit user_id -> is_technician
+        self._jitbit_tech_permission_cache: set[tuple[int, int]] = set()  # (user_id, category_id) pairs we've granted
         self._jitbit_cache_hits = 0  # Cache statistics
         self._jitbit_cache_misses = 0
 
@@ -365,26 +366,7 @@ class JitbitApi(object):
             else:
                 logger.critical(f'[{email}] ERROR: Unable to connect to URL: {url} - Status {response.status_code}')
                 logger.debug(f'Response body: {response.text}')
-                # Return default user ID
-                default_email_key = config.JITBIT_DEFAULT_ASSIGN_EMAIL.lower()
-
-                # Check if default user is cached
-                if default_email_key in self._jitbit_user_id_cache:
-                    logger.debug(f'Using cached default user ID')
-                    return self._jitbit_user_id_cache[default_email_key]
-
-                default_response = self._make_request(
-                    'GET',
-                    url,
-                    params={'email': config.JITBIT_DEFAULT_ASSIGN_EMAIL}
-                )
-                if default_response.status_code == 200:
-                    default_user_id = default_response.json()["UserID"]
-                    # Cache default user too
-                    self._jitbit_user_id_cache[default_email_key] = default_user_id
-                    return default_user_id
-                else:
-                    logger.error(f'Default user lookup also failed with status {default_response.status_code}')
+                # User not found - return -1 to allow calling code to handle (auto-create or use default)
                 return -1
 
         except Exception as e:
@@ -498,7 +480,9 @@ class JitbitApi(object):
                 logger.info(f'[{key}] Successfully updated ticket at URL: {url}')
                 ret = True
             else:
-                logger.critical(f'[{key}] ERROR: Unable to complete URL: {url}')
+                logger.critical(f'[{key}] ERROR: Unable to complete URL: {url} - Status {response.status_code}')
+                logger.critical(f'[{key}] Request data: {in_data}')
+                logger.critical(f'[{key}] Response body: {response.text}')
                 raise SystemError(ret)
 
         except Exception as e:
@@ -636,21 +620,27 @@ class JitbitApi(object):
             logger.error(f'[{jira_key}] Error searching for ticket: {str(e)}')
             return None
 
-    def create_user(self, email: str, first_name: str, last_name: str, is_technician: bool = False) -> int:
+    def create_user(self, email: str, first_name: str, last_name: str) -> int:
         """
         Create a new JitBit user
         Returns user ID if successful, -1 otherwise
 
-        Note: is_technician parameter is ignored as JitBit assigns technician permissions
-              per-category via AddCategoryTechPermission API, not during user creation.
+        Args:
+            email: User's email address
+            first_name: User's first name
+            last_name: User's last name
+
+        Note: Technician permissions are assigned per-category via AddCategoryTechPermission API,
+              not during user creation.
         """
         url = config.JITBIT_API_URL + '/CreateUser'
-        logger.info(f'Creating user: {email}')
+        logger.info(f'Creating user: {first_name} {last_name} ({email})')
 
         in_data = {
             'email': email,
             'firstName': first_name,
-            'lastName': last_name
+            'lastName': last_name,
+            'sendWelcomeEmail': False
         }
 
         try:
@@ -670,7 +660,7 @@ class JitbitApi(object):
             raise
 
     def get_user_by_email_or_create(self, email: str, first_name: str = '', last_name: str = '',
-                                     create_if_missing: bool = False, is_technician: bool = False) -> int:
+                                     create_if_missing: bool = False) -> int:
         """
         Get user by email, optionally creating if not found
         Returns user ID or -1 if not found and not created
@@ -690,8 +680,53 @@ class JitbitApi(object):
                 first_name = name_parts[0] if len(name_parts) > 0 else 'Unknown'
                 last_name = name_parts[1] if len(name_parts) > 1 else ''
 
-            return self.create_user(email, first_name, last_name, is_technician)
+            return self.create_user(email, first_name, last_name)
         else:
             logger.warning(f'User {email} not found and create_if_missing is False')
             return -1
+
+    def add_category_tech_permission(self, user_id: int, category_id: int) -> bool:
+        """
+        Grant technician permissions to a user for a specific category.
+        Uses caching to avoid redundant API calls.
+
+        Args:
+            user_id: JitBit user ID
+            category_id: JitBit category ID
+
+        Returns:
+            True if permission granted or already exists, False on error
+        """
+        # Check cache first
+        cache_key = (user_id, category_id)
+        if cache_key in self._jitbit_tech_permission_cache:
+            logger.debug(f'User {user_id} already has technician permission for category {category_id} (cached)')
+            return True
+
+        url = config.JITBIT_API_URL + '/AddCategoryTechPermission'
+        logger.info(f'Granting technician permission: user {user_id} for category {category_id}')
+
+        in_data = {
+            'userid': user_id,
+            'categoryid': category_id
+        }
+
+        try:
+            response = self._make_request('POST', url, data=in_data)
+
+            if response.status_code == 200:
+                logger.info(f'Successfully granted technician permission to user {user_id} for category {category_id}')
+                # Cache this permission grant
+                self._jitbit_tech_permission_cache.add(cache_key)
+                # Update technician cache - user is now a technician (at least for this category)
+                self._jitbit_technician_cache[user_id] = True
+                return True
+            else:
+                logger.warning(f'Failed to grant technician permission: status {response.status_code}')
+                logger.warning(f'Response: {response.text}')
+                return False
+
+        except Exception as e:
+            logger.error(f'Error granting technician permission: {str(e)}')
+            return False
 
