@@ -339,6 +339,10 @@ attachment_folder: {attachment_folder}
     console.print(f"[green]✓ Created {config_path}[/green]\n")
 
     # Test connections
+    jira_api = None
+    jitbit_api = None
+    connections_ok = False
+
     if Confirm.ask("Test API connections now?", default=True):
         console.print("\n[cyan]Testing connections...[/cyan]\n")
 
@@ -358,7 +362,8 @@ attachment_folder: {attachment_folder}
             # Test JIRA
             console.print("[cyan]Testing JIRA connection...[/cyan]")
             jira_api = JiraApi()
-            if jira_api.check_url_and_user():
+            jira_ok = jira_api.check_url_and_user()
+            if jira_ok:
                 console.print("[green]✓ JIRA connection successful[/green]")
             else:
                 console.print("[red]✗ JIRA connection failed[/red]")
@@ -366,14 +371,179 @@ attachment_folder: {attachment_folder}
             # Test JitBit
             console.print("[cyan]Testing JitBit connection...[/cyan]")
             jitbit_api = JitbitApi()
-            if jitbit_api.check_url_and_user():
+            jitbit_ok = jitbit_api.check_url_and_user()
+            if jitbit_ok:
                 console.print("[green]✓ JitBit connection successful[/green]")
             else:
                 console.print("[red]✗ JitBit connection failed[/red]")
 
+            connections_ok = jira_ok and jitbit_ok
+
         except Exception as e:
             console.print(f"[red]Error testing connections: {str(e)}[/red]")
             console.print("[yellow]You can run 'jirajitsu validate config' later to test[/yellow]")
+
+    # Interactive defaults selection (if connections succeeded)
+    if connections_ok and Confirm.ask("\nWould you like to select defaults from available options?", default=True):
+        console.print("\n[bold cyan]Setting Defaults Interactively[/bold cyan]\n")
+
+        # Update config with selected defaults
+        updated_config = {}
+
+        # Select JitBit category
+        if Confirm.ask("Select JitBit migration category from list?", default=True):
+            try:
+                console.print("[cyan]Fetching JitBit categories...[/cyan]")
+                categories = jitbit_api.get_categories()
+
+                if categories:
+                    console.print("\n[bold]Available Categories:[/bold]")
+                    for i, cat in enumerate(categories, 1):
+                        private_marker = " [yellow](Private)[/yellow]" if cat.get('IsPrivate') else ""
+                        console.print(f"  {i}. {cat.get('Name')}{private_marker} [dim](ID: {cat.get('CategoryID')})[/dim]")
+
+                    while True:
+                        choice = Prompt.ask(f"\nSelect category [1-{len(categories)}]", default="1")
+                        try:
+                            idx = int(choice) - 1
+                            if 0 <= idx < len(categories):
+                                selected_cat = categories[idx]
+                                updated_config['jitbit_migrate_category_id'] = selected_cat['CategoryID']
+                                console.print(f"[green]✓ Selected: {selected_cat['Name']} (ID: {selected_cat['CategoryID']})[/green]")
+                                break
+                            else:
+                                console.print(f"[red]Please enter a number between 1 and {len(categories)}[/red]")
+                        except ValueError:
+                            console.print("[red]Please enter a valid number[/red]")
+                else:
+                    console.print("[yellow]No categories found[/yellow]")
+            except Exception as e:
+                console.print(f"[yellow]Could not fetch categories: {e}[/yellow]")
+
+        # Select JIRA filter
+        if Confirm.ask("\nSelect JIRA filter from list?", default=not bool(jira_filter_id)):
+            try:
+                console.print("[cyan]Fetching JIRA filters...[/cyan]")
+                filters = jira_api.get_filters()
+
+                if filters:
+                    console.print("\n[bold]Available Filters:[/bold]")
+                    for i, f in enumerate(filters, 1):
+                        fav_marker = " ⭐" if f.get('favourite') else ""
+                        console.print(f"  {i}. {f.get('name')}{fav_marker} [dim](ID: {f.get('id')})[/dim]")
+                        if f.get('description'):
+                            console.print(f"     [dim]{f.get('description')[:80]}[/dim]")
+
+                    console.print(f"\n  0. [dim]Skip - configure later[/dim]")
+
+                    while True:
+                        choice = Prompt.ask(f"\nSelect filter [0-{len(filters)}]", default="0")
+                        try:
+                            idx = int(choice)
+                            if idx == 0:
+                                console.print("[yellow]Skipped - you can set this later with 'jirajitsu config set jira_filter_id <ID>'[/yellow]")
+                                break
+                            elif 1 <= idx <= len(filters):
+                                selected_filter = filters[idx - 1]
+                                updated_config['jira_filter_id'] = selected_filter['id']
+                                console.print(f"[green]✓ Selected: {selected_filter['name']} (ID: {selected_filter['id']})[/green]")
+                                break
+                            else:
+                                console.print(f"[red]Please enter a number between 0 and {len(filters)}[/red]")
+                        except ValueError:
+                            console.print("[red]Please enter a valid number[/red]")
+                else:
+                    console.print("[yellow]No filters found[/yellow]")
+            except Exception as e:
+                console.print(f"[yellow]Could not fetch filters: {e}[/yellow]")
+
+        # Select default assignee
+        if Confirm.ask("\nSelect default assignee from JitBit users?", default=True):
+            try:
+                console.print("[cyan]Fetching JitBit users...[/cyan]")
+                users = jitbit_api.get_users()
+
+                if users:
+                    # Filter to active users only
+                    active_users = [u for u in users if not u.get('Disabled', False)]
+
+                    console.print("\n[bold]Available Users:[/bold]")
+                    for i, u in enumerate(active_users, 1):
+                        admin_marker = " [cyan](Admin)[/cyan]" if u.get('IsAdmin') else ""
+                        console.print(f"  {i}. {u.get('FullName')}{admin_marker} - {u.get('Email')} [dim](ID: {u.get('UserID')})[/dim]")
+
+                    while True:
+                        choice = Prompt.ask(f"\nSelect default assignee [1-{len(active_users)}]", default="1")
+                        try:
+                            idx = int(choice) - 1
+                            if 0 <= idx < len(active_users):
+                                selected_user = active_users[idx]
+                                updated_config['jitbit_default_assign_email'] = selected_user['Email']
+                                console.print(f"[green]✓ Selected: {selected_user['FullName']} ({selected_user['Email']})[/green]")
+                                break
+                            else:
+                                console.print(f"[red]Please enter a number between 1 and {len(active_users)}[/red]")
+                        except ValueError:
+                            console.print("[red]Please enter a valid number[/red]")
+                else:
+                    console.print("[yellow]No users found[/yellow]")
+            except Exception as e:
+                console.print(f"[yellow]Could not fetch users: {e}[/yellow]")
+
+        # Write updated config if anything changed
+        if updated_config:
+            console.print("\n[cyan]Updating config.yml with selected defaults...[/cyan]")
+
+            # Reload and merge config
+            current_config = load_yaml_config(config_path)
+            current_config.update(updated_config)
+
+            # Rebuild config content with updated values
+            jira_filter_id = current_config.get('jira_filter_id', jira_filter_id)
+            jira_tag_field = current_config.get('jira_tag_field', jira_tag_field)
+            jitbit_category = current_config.get('jitbit_migrate_category_id', jitbit_category)
+            jitbit_default_email = current_config.get('jitbit_default_assign_email', jitbit_default_email)
+
+            # Rebuild config file
+            jira_settings_lines = []
+            if jira_filter_id:
+                jira_settings_lines.append(f"jira_filter_id: {jira_filter_id}")
+            else:
+                jira_settings_lines.append("# jira_filter_id: 10000  # Set this to scope migration to specific filter")
+
+            if jira_tag_field:
+                jira_settings_lines.append(f"jira_tag_field: {jira_tag_field}")
+            else:
+                jira_settings_lines.append("# jira_tag_field: customfield_10800  # Set this to migrate tags from custom field")
+
+            jira_settings = "\n".join(jira_settings_lines)
+
+            config_content = f"""# JiraJitsu Configuration File
+# Generated by setup wizard
+
+# Logging Configuration
+log_dir: {log_dir}
+log_max_bytes: 10485760
+log_backup_count: 5
+
+# JitBit Settings
+jitbit_migrate_category_id: {jitbit_category}
+{f'jitbit_delete_category_id: {jitbit_delete_category}' if jitbit_delete_category else '# jitbit_delete_category_id: 12346'}
+jitbit_default_assign_email: {jitbit_default_email}
+jitbit_jira_assignee_field_id: {current_config.get('jitbit_jira_assignee_field_id', 66782)}
+
+# JIRA Settings
+{jira_settings}
+
+# Attachment Settings
+fetch_attachments: {fetch_mode}
+attachment_folder: {attachment_folder}
+"""
+
+            with open(config_path, 'w') as f:
+                f.write(config_content)
+
+            console.print(f"[green]✓ Updated {config_path}[/green]")
 
     console.print("\n[bold green]✓ Setup complete![/bold green]")
     console.print("\nNext steps:")
