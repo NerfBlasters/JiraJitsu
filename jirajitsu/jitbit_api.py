@@ -27,6 +27,13 @@ class JitbitApi(object):
         # Restricted endpoints that have lower rate limits
         self._restricted_endpoints = {'/UserByEmail', '/Search'}
 
+        # JitBit user caching - reduces redundant API calls during migration
+        # Maps email -> JitBit user_id and user_id -> is_technician status
+        self._jitbit_user_id_cache: dict[str, int] = {}  # email (lowercase) -> JitBit user_id
+        self._jitbit_technician_cache: dict[int, bool] = {}  # JitBit user_id -> is_technician
+        self._jitbit_cache_hits = 0  # Cache statistics
+        self._jitbit_cache_misses = 0
+
     def __del__(self):
         pass
 
@@ -289,11 +296,26 @@ class JitbitApi(object):
         """
         Get JitBit user ID from email address.
         Returns user ID or default user ID if email is invalid or user not found.
+        Uses in-memory cache to reduce redundant API calls.
         """
         # Validate email format
         if isinstance(email, int) or not email or not isinstance(email, str):
             logger.warning(f'{email} is not a valid email format, using default email')
             email = config.JITBIT_DEFAULT_ASSIGN_EMAIL
+
+        # Normalize email for cache lookup (case-insensitive)
+        email_key = email.lower()
+
+        # Check cache first
+        if email_key in self._jitbit_user_id_cache:
+            user_id = self._jitbit_user_id_cache[email_key]
+            self._jitbit_cache_hits += 1
+            logger.debug(f'[{email}] Cache hit - JitBit user_id: {user_id} (hits: {self._jitbit_cache_hits})')
+            return user_id
+
+        # Cache miss - make API call
+        self._jitbit_cache_misses += 1
+        logger.debug(f'[{email}] Cache miss - fetching from API (misses: {self._jitbit_cache_misses})')
 
         url = config.JITBIT_API_URL + '/UserByEmail'
         params = {'email': email}
@@ -306,19 +328,33 @@ class JitbitApi(object):
                 logger.info(f'[{email}] Successfully connected to URL: {url}')
                 user_id = response.json()["UserID"]
                 logger.info(f'User ID: {user_id}')
+
+                # Store in cache
+                self._jitbit_user_id_cache[email_key] = user_id
+
                 return user_id
 
             else:
                 logger.critical(f'[{email}] ERROR: Unable to connect to URL: {url} - Status {response.status_code}')
                 logger.debug(f'Response body: {response.text}')
                 # Return default user ID
+                default_email_key = config.JITBIT_DEFAULT_ASSIGN_EMAIL.lower()
+
+                # Check if default user is cached
+                if default_email_key in self._jitbit_user_id_cache:
+                    logger.debug(f'Using cached default user ID')
+                    return self._jitbit_user_id_cache[default_email_key]
+
                 default_response = self._make_request(
                     'GET',
                     url,
                     params={'email': config.JITBIT_DEFAULT_ASSIGN_EMAIL}
                 )
                 if default_response.status_code == 200:
-                    return default_response.json()["UserID"]
+                    default_user_id = default_response.json()["UserID"]
+                    # Cache default user too
+                    self._jitbit_user_id_cache[default_email_key] = default_user_id
+                    return default_user_id
                 else:
                     logger.error(f'Default user lookup also failed with status {default_response.status_code}')
                 return -1
@@ -332,7 +368,17 @@ class JitbitApi(object):
         """
         Check if a user has the technician flag set in JitBit.
         Returns True if user is a technician, False otherwise.
+        Uses in-memory cache to reduce redundant API calls.
         """
+        # Check cache first
+        if user_id in self._jitbit_technician_cache:
+            is_tech = self._jitbit_technician_cache[user_id]
+            logger.debug(f'[{user_id}] Cache hit - JitBit technician status: {is_tech}')
+            return is_tech
+
+        # Cache miss - make API call
+        logger.debug(f'[{user_id}] Cache miss - fetching technician status from API')
+
         url = config.JITBIT_API_URL + '/User'
         params = {'userId': user_id}  # Fixed: API expects 'userId' not 'id'
         logger.info(f'[{user_id}] Checking technician status at URL: {url} ...')
@@ -345,6 +391,10 @@ class JitbitApi(object):
                 user_data = response.json()
                 is_tech = user_data.get("IsTech", False)  # Fixed: API returns 'IsTech' not 'IsTechie'
                 logger.info(f'User {user_id} technician status: {is_tech}')
+
+                # Store in cache
+                self._jitbit_technician_cache[user_id] = is_tech
+
                 return is_tech
             else:
                 logger.warning(f'[{user_id}] ERROR: Unable to retrieve user info from URL: {url} - Status {response.status_code}')
