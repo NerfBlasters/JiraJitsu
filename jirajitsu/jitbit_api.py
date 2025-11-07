@@ -200,8 +200,28 @@ class JitbitApi(object):
     Pass behalf_of if you want to create ticket for someone else. That is, "Created By" is different
     """
 
-    def post_ticket(self, key: str, category_id: int, subject: str, body: str, priority_id: int, created_by: int, behalf_of: int | None = None) -> int:
+    def post_ticket(self, key: str, category_id: int, subject: str, body: str, priority_id: int, created_by: int,
+                    behalf_of: int | None = None, custom_fields: dict[int, str] | None = None) -> int:
+        """
+        Create a new ticket in JitBit.
 
+        Args:
+            key: Jira issue key (for logging)
+            category_id: JitBit category ID
+            subject: Ticket subject
+            body: Ticket body
+            priority_id: Priority ID
+            created_by: User ID of ticket creator
+            behalf_of: Optional user ID to create ticket on behalf of
+            custom_fields: Optional dict mapping custom field IDs (int) to values (str)
+                          Will be converted to JSON-string format required by JitBit API
+                          Example dict: {66782: "Andy Pettit", 12345: "Some Value"}
+                          Becomes JSON-string: '{"66782": "Andy Pettit", "12345": "Some Value"}'
+                          Note: Keys are CustomFieldId numbers, not field names
+
+        Returns:
+            JitBit ticket ID if successful, -1 otherwise
+        """
         ret = -1
 
         url = config.JITBIT_API_URL + '/ticket'
@@ -215,6 +235,14 @@ class JitbitApi(object):
                      'suppressConfirmation': True,  # Skip sending user confirmation email
                      'dueDate': ''  # Empty string for dueDate
                   }
+
+        # Add custom fields if provided
+        # JitBit API requires customFields as a JSON-string in format: {"CustomFieldId": "value", ...}
+        if custom_fields:
+            # Convert dict to JSON-string with field IDs as string keys
+            custom_fields_json = json.dumps({str(k): v for k, v in custom_fields.items()})
+            in_data['customFields'] = custom_fields_json
+            logger.debug(f'[{key}] Adding custom fields JSON-string: {custom_fields_json}')
 
         logger.debug(in_data)
 

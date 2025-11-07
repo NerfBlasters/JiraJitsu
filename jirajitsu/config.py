@@ -65,6 +65,7 @@ JITBIT_TOKEN = os.getenv('JITBIT_TOKEN')
 JITBIT_MIGRATE_CATEGORY_ID = data.get('jitbit_migrate_category_id', None)
 JITBIT_DELETE_CATEGORY_ID = data.get('jitbit_delete_category_id', None)
 JITBIT_DEFAULT_ASSIGN_EMAIL = data.get('jitbit_default_assign_email', None)
+JITBIT_JIRA_ASSIGNEE_FIELD_ID = data.get('jitbit_jira_assignee_field_id', 66782)  # Custom field for original Jira assignee
 
 # JIRA Configuration - Load secrets from environment variables
 # These may be None if .env doesn't exist yet (e.g., during setup)

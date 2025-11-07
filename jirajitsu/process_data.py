@@ -281,10 +281,13 @@ class ProcessData(object):
             created_by = self.jitbit_api.get_user_id_by_email(created_by_email)
             logger.debug(f'Variable created_by is [{created_by}]')
 
-            # Get original Jira assignee email for close date calculation (before any JitBit mapping)
+            # Get original Jira assignee info (before any JitBit mapping)
+            # Used for: close date calculation AND populating the "Jira Assignee" custom field
             jira_assignee_email = None
-            if issue_info['fields']['assignee'] and issue_info['fields']['assignee'].get('emailAddress'):
-                jira_assignee_email = issue_info['fields']['assignee']['emailAddress']
+            jira_assignee_name = None
+            if issue_info['fields']['assignee']:
+                jira_assignee_email = issue_info['fields']['assignee'].get('emailAddress')
+                jira_assignee_name = issue_info['fields']['assignee'].get('displayName')
 
             # Assigned to - determine JitBit assignee
             # Check if assignee exists and get their user ID
@@ -318,8 +321,16 @@ class ProcessData(object):
             start_date = calculate_start_date(issue_info)
             close_date = calculate_close_date(issue_info, jira_assignee_email)
 
+            # Prepare custom fields - populate "Jira Assignee" field with original Jira assignee name
+            custom_fields = {}
+            if jira_assignee_name:
+                custom_fields[config.JITBIT_JIRA_ASSIGNEE_FIELD_ID] = jira_assignee_name
+                logger.debug(f'[{key}] Will set Jira Assignee custom field to: {jira_assignee_name}')
+
             # Ready to create the ticket
-            ticket_id = int(self.jitbit_api.post_ticket(key, category_id, subject, body, priority_id, created_by, assign_to_id))
+            ticket_id = int(self.jitbit_api.post_ticket(key, category_id, subject, body, priority_id, created_by,
+                                                        behalf_of=assign_to_id,
+                                                        custom_fields=custom_fields if custom_fields else None))
             if ticket_id > 0:
 
                 # Update ticket with date and assignee
