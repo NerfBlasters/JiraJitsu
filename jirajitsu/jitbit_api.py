@@ -291,6 +291,43 @@ class JitbitApi(object):
 
         return ret
 
+    def get_ticket_comments(self, key: str, ticket_id: int) -> list[dict]:
+        """
+        Get all comments for a specific JitBit ticket.
+
+        Args:
+            key: Jira issue key (for logging)
+            ticket_id: JitBit ticket ID
+
+        Returns:
+            List of comment dictionaries with fields:
+            - CommentID: Unique comment identifier
+            - Body: Comment text
+            - CommentDate: ISO 8601 timestamp
+            - UserID, UserName: Comment author info
+        """
+        assert ticket_id > 0
+
+        url = config.JITBIT_API_URL + '/comments'
+        logger.info(f'[{key}] Fetching comments from URL: {url} for ticket {ticket_id}...')
+
+        params = {'id': ticket_id}
+
+        try:
+            response = self._make_request('GET', url, params=params)
+
+            if response.status_code == 200:
+                comments = response.json()
+                logger.info(f'[{key}] Successfully fetched {len(comments)} comments from ticket {ticket_id}')
+                return comments
+            else:
+                logger.error(f'[{key}] ERROR: Unable to fetch comments from URL: {url} (status {response.status_code})')
+                return []
+
+        except Exception as e:
+            logger.error(f'[{key}] Exception while fetching comments: {str(e)}')
+            return []
+
     def post_attach_file(self, key: str, ticket_id: int, attach_file: str) -> bool:
 
         assert ticket_id > 0

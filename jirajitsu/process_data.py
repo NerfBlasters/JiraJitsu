@@ -466,12 +466,45 @@ class ProcessData(object):
     def _add_comments(self, key: str, ticket_id: int, issue_info: dict):
         assert ticket_id > 0
 
+        # Fetch existing comments to avoid duplicates
+        existing_comments = self.jitbit_api.get_ticket_comments(key, ticket_id)
+
+        # Build a set of timestamps that already exist in JitBit comments
+        # Extract timestamp from "(Originally posted on: YYYY-MM-DD HH:MM:SS)" prefix
+        # JitBit returns HTML format: "<!--html-->(Originally posted on: YYYY-MM-DD HH:MM:SS)<br><br>..."
+        existing_timestamps = set()
+        for existing_comment in existing_comments:
+            body = existing_comment.get('Body', '')
+            # Strip HTML comment prefix if present
+            if body.startswith('<!--html-->'):
+                body = body[11:]  # Remove "<!--html-->"
+
+            # Check for format: "(Originally posted on: ...)"
+            if body.startswith('(Originally posted on: '):
+                # Look for closing paren followed by HTML break tags
+                end_idx = body.find(')<br>')
+                if end_idx > 23:
+                    timestamp = body[23:end_idx]  # Extract the timestamp
+                    existing_timestamps.add(timestamp)
+                    logger.debug(f'[{key}] Extracted existing timestamp: "{timestamp}"')
+
+        logger.info(f'[{key}] Found {len(existing_comments)} existing comments with {len(existing_timestamps)} unique timestamps')
+        if existing_timestamps:
+            logger.debug(f'[{key}] Existing timestamps: {existing_timestamps}')
+
         comments = issue_info['fields']['comment']
+        comments_added = 0
+        comments_skipped = 0
+
         for comment in comments['comments']:
             comment_text = comment['body']
             # Comments can be anonymous - use default user ID
             comment_author_id = self.default_assign_id
-            comment_timestamp = comment['updated'][:10]
+            # Use raw timestamp from Jira (already in correct timezone)
+            # Jira format: "2024-01-15T14:30:45.123+0000"
+            comment_timestamp_full = comment['updated']
+            # Extract readable format: YYYY-MM-DD HH:MM:SS
+            comment_timestamp = comment_timestamp_full[:10] + ' ' + comment_timestamp_full[11:19]
             if 'updateAuthor' in comment:
                 comment_author = comment['updateAuthor'].get('emailAddress')
                 if comment_author:
@@ -487,7 +520,19 @@ class ProcessData(object):
 
 
             comment_data = '(Originally posted on: ' + comment_timestamp + ')\n\n' + comment_text
-            self.jitbit_api.post_comment(key, ticket_id, comment_data, comment_author_id)
+
+            # Check if a comment with this timestamp already exists in JitBit
+            logger.debug(f'[{key}] Checking new comment timestamp: "{comment_timestamp}"')
+            if comment_timestamp in existing_timestamps:
+                logger.info(f'[{key}] Comment from {comment_timestamp} already exists, skipping')
+                comments_skipped += 1
+            else:
+                logger.debug(f'[{key}] Timestamp not found in existing set, posting comment')
+                self.jitbit_api.post_comment(key, ticket_id, comment_data, comment_author_id)
+                comments_added += 1
+
+        if comments_skipped > 0:
+            logger.info(f'[{key}] Added {comments_added} new comments, skipped {comments_skipped} duplicates')
 
     def _add_attachments(self, key: str, ticket_id: int, issue_info: dict):
 
