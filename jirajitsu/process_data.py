@@ -327,10 +327,20 @@ class ProcessData(object):
                 custom_fields[config.JITBIT_JIRA_ASSIGNEE_FIELD_ID] = jira_assignee_name
                 logger.debug(f'[{key}] Will set Jira Assignee custom field to: {jira_assignee_name}')
 
-            # Ready to create the ticket
-            ticket_id = int(self.jitbit_api.post_ticket(key, category_id, subject, body, priority_id, created_by,
-                                                        behalf_of=assign_to_id,
-                                                        custom_fields=custom_fields if custom_fields else None))
+            # Check for duplicate ticket - search by Jira key
+            existing_ticket_id = self.jitbit_api.search_tickets_by_jira_key(key)
+
+            if existing_ticket_id:
+                # Ticket already exists - update instead of creating new
+                logger.info(f'[{key}] Ticket already exists (ID: {existing_ticket_id}), will update instead of creating new')
+                ticket_id = existing_ticket_id
+            else:
+                # No duplicate found - create new ticket
+                logger.info(f'[{key}] No existing ticket found, creating new ticket')
+                ticket_id = int(self.jitbit_api.post_ticket(key, category_id, subject, body, priority_id, created_by,
+                                                            behalf_of=assign_to_id,
+                                                            custom_fields=custom_fields if custom_fields else None))
+
             if ticket_id > 0:
 
                 # Update ticket with date and assignee

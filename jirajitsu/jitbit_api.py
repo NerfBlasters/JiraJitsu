@@ -592,6 +592,50 @@ class JitbitApi(object):
             logger.critical(str(e))
             raise
 
+    def search_tickets_by_jira_key(self, jira_key: str) -> int | None:
+        """
+        Search for an existing JitBit ticket by Jira key.
+        Searches for the Jira key in ticket subjects (e.g., "ISD-5210").
+
+        Args:
+            jira_key: The Jira issue key to search for
+
+        Returns:
+            JitBit ticket ID if found, None otherwise
+
+        Note: This uses the Search endpoint which is rate-limited (60/min)
+        """
+        url = config.JITBIT_API_URL + '/Search'
+        params = {'query': jira_key}
+        logger.info(f'[{jira_key}] Searching for existing ticket with query: {jira_key}')
+
+        try:
+            response = self._make_request('GET', url, params=params)
+
+            if response.status_code == 200:
+                results = response.json()
+                logger.debug(f'[{jira_key}] Search returned {len(results)} result(s)')
+
+                # Look for exact match in subject - we append the Jira key in parentheses
+                # Subject format: "Summary (JIRA-KEY)"
+                for ticket in results:
+                    subject = ticket.get('Subject', '')
+                    # Check if subject ends with (JIRA-KEY) or contains the exact key
+                    if f'({jira_key})' in subject or subject.endswith(jira_key):
+                        ticket_id = ticket.get('IssueID')
+                        logger.info(f'[{jira_key}] Found existing ticket: {ticket_id} - {subject}')
+                        return ticket_id
+
+                logger.info(f'[{jira_key}] No existing ticket found')
+                return None
+            else:
+                logger.warning(f'[{jira_key}] Search failed with status: {response.status_code}')
+                return None
+
+        except Exception as e:
+            logger.error(f'[{jira_key}] Error searching for ticket: {str(e)}')
+            return None
+
     def create_user(self, email: str, first_name: str, last_name: str, is_technician: bool = False) -> int:
         """
         Create a new JitBit user
