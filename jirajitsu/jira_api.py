@@ -182,11 +182,17 @@ class JiraApi(object):
             logger.critical(str(e))
             raise
 
-    def get_issue_info(self, key: str) -> tuple[bool, dict | None]:
+    def get_issue_info(self, key: str, fetch_rendered: bool = False) -> tuple[bool, dict | None]:
 
         # Check URL and user authentication
         # Expand changelog to get assignee change history
-        url = config.JIRA_API_URL + '/issue/' + key + '?expand=changelog'
+        expand_params = 'changelog'
+
+        # Only fetch renderedFields if HTML rendering is requested (--html flag)
+        if fetch_rendered:
+            expand_params += ',renderedFields'
+
+        url = config.JIRA_API_URL + '/issue/' + key + '?expand=' + expand_params
         logger.info(f'[{key}] Connecting to  URL: {url} ...')
 
         try:

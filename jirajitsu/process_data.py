@@ -164,9 +164,29 @@ def clean_jira_wiki_markup(text: str) -> str:
     return text
 
 
+def strip_internal_images(html: str) -> str:
+    """
+    Remove img tags that reference internal IP addresses (192.168.x.x).
+    These won't be accessible from JitBit and would show as broken images.
+
+    Args:
+        html: HTML content from JIRA
+
+    Returns:
+        HTML with internal image references removed
+    """
+    if not html:
+        return html
+
+    # Remove img tags with src containing 192.168.x.x
+    html = re.sub(r'<img[^>]*src=["\'][^"\']*192\.168\.[^"\']*["\'][^>]*>', '', html, flags=re.IGNORECASE)
+
+    return html
+
+
 class ProcessData(object):
 
-    def __init__(self, create_missing_users: bool = False):
+    def __init__(self, create_missing_users: bool = False, use_html: bool = False):
         logger.info('Starting ProcessData ..')
         self.jitbit_api = JitbitApi()
         self.jira_api = JiraApi()
@@ -177,6 +197,9 @@ class ProcessData(object):
         # User creation settings
         self.create_missing_users = create_missing_users
         self.created_users = []  # Track created users: [(email, first_name, last_name, user_id), ...]
+
+        # Content rendering settings
+        self.use_html = use_html
 
         # Migration statistics
         self.stats = {
@@ -248,7 +271,7 @@ class ProcessData(object):
                 pbar.update(pbar_count)
                 logger.info(f'[{key}] Processing: {pbar_count}{total_str}')
 
-                status, issue_info = self.jira_api.get_issue_info(key)
+                status, issue_info = self.jira_api.get_issue_info(key, fetch_rendered=self.use_html)
 
                 if not status:
                     logger.critical(f'[{key}] ERROR: Not able to get issue info')
@@ -317,7 +340,7 @@ class ProcessData(object):
             logger.info(f'Testing with issue: {key}')
 
             # Process this single issue
-            status, issue_info = self.jira_api.get_issue_info(key)
+            status, issue_info = self.jira_api.get_issue_info(key, fetch_rendered=self.use_html)
 
             if not status:
                 logger.critical(f'[{key}] ERROR: Not able to get issue info')
@@ -390,9 +413,14 @@ class ProcessData(object):
             subject = issue_info['fields']['summary'] + ' (' + key + ')'
 
             # Build body with null-safe concatenation
-            description = issue_info['fields'].get('description') or ''
-            # Clean JIRA wiki markup tags
-            description = clean_jira_wiki_markup(description)
+            if self.use_html and issue_info.get('renderedFields') and issue_info['renderedFields'].get('description'):
+                # Use HTML-rendered description and strip internal images
+                description = issue_info['renderedFields']['description']
+                description = strip_internal_images(description)
+            else:
+                # Use wiki markup and clean color tags
+                description = issue_info['fields'].get('description') or ''
+                description = clean_jira_wiki_markup(description)
 
             # Add assignee info if available
             assignee_name = ''
@@ -621,9 +649,13 @@ class ProcessData(object):
         comments_skipped = 0
 
         for comment in comments['comments']:
-            comment_text = comment['body']
-            # Clean JIRA wiki markup tags
-            comment_text = clean_jira_wiki_markup(comment_text)
+            # Use HTML-rendered or wiki markup based on flag
+            if self.use_html and comment.get('renderedBody'):
+                comment_text = comment['renderedBody']
+                comment_text = strip_internal_images(comment_text)
+            else:
+                comment_text = comment['body']
+                comment_text = clean_jira_wiki_markup(comment_text)
             # Comments can be anonymous - use default user ID
             comment_author_id = self.default_assign_id
             # Use raw timestamp from Jira (already in correct timezone)

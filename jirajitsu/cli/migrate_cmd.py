@@ -24,10 +24,11 @@ console = Console()
 @click.option('--issues', type=str, help='Comma-separated list of issue keys (e.g., RFM-1,RFM-2)')
 @click.option('--category-id', type=int, help='Override JitBit destination category ID')
 @click.option('--ignore-missing-users', is_flag=True, help='Do not create missing JitBit users (use JITBIT_DEFAULT_ASSIGN_EMAIL instead)')
+@click.option('--html', is_flag=True, help='Use HTML-rendered content from JIRA instead of wiki markup')
 @click.option('--dry-run', is_flag=True, help='Show what would be migrated without migrating')
 @click.option('--limit', type=int, default=20, help='Number of issues to display in dry-run (0 for all, default: 20)')
 @click.pass_context
-def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, ignore_missing_users, dry_run, limit):
+def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, ignore_missing_users, html, dry_run, limit):
     """
     Migrate issues from JIRA to JitBit
 
@@ -55,6 +56,9 @@ def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, igno
         # Migrate specific issues
         jirajitsu migrate --issues RFM-1,RFM-2,RFM-3
 
+        # Use HTML-rendered content (cleaner formatting, internal images stripped)
+        jirajitsu migrate --html
+
         # Preview without migrating
         jirajitsu migrate --dry-run
     """
@@ -80,7 +84,7 @@ def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, igno
         jira_api = JiraApi()
         # By default, create missing users. Only disable if --ignore-missing-users is set
         create_missing_users = not ignore_missing_users
-        process_data = ProcessData(create_missing_users=create_missing_users)
+        process_data = ProcessData(create_missing_users=create_missing_users, use_html=html)
 
         # Override category if specified
         if category_id:
@@ -95,6 +99,12 @@ def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, igno
             console.print(f"[yellow]Missing users will be assigned to: {config.JITBIT_DEFAULT_ASSIGN_EMAIL}[/yellow]")
         else:
             console.print("[cyan]Auto-create missing users: ENABLED[/cyan]")
+
+        # Show HTML rendering status
+        if html:
+            console.print("[cyan]Content format: HTML-rendered (internal images will be stripped)[/cyan]")
+        else:
+            console.print("[cyan]Content format: Wiki markup (color tags removed)[/cyan]")
 
         # Determine which issues to migrate
         if issues:
