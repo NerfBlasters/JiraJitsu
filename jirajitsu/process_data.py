@@ -190,6 +190,9 @@ class ProcessData(object):
             # Run the filter and get a list of issues to migrate
             issues_list = self.jira_api.get_filter(filter_url)
 
+            # Pre-load user caches to minimize API calls during migration
+            self.jitbit_api.preload_user_caches(config.JITBIT_MIGRATE_CATEGORY_ID)
+
             # Setup progress bar
             total = len(issues_list['issues'])
             total_str = '/' + str(total)
@@ -480,7 +483,12 @@ class ProcessData(object):
 
             if ticket_id > 0:
 
-                # Update ticket with consolidated API call
+                # Add comments and attachments first (while ticket is in initial status)
+                # This prevents comments from reopening a closed ticket
+                self._add_comments(key, ticket_id, issue_info)
+                self._add_attachments(key, ticket_id, issue_info)
+
+                # Update ticket last with consolidated API call
                 # Set all fields in one call to minimize API usage
                 # NOTE: userId is set during ticket creation (post_ticket), not in updates
                 update_params = {
@@ -489,14 +497,11 @@ class ProcessData(object):
                     'statusId': status_id
                 }
 
-                # Include closeDate if ticket is closed
-                if close_date:
-                    update_params['closeDate'] = close_date
+                update_success = self.jitbit_api.post_update_ticket(key, ticket_id, **update_params)
 
-                self.jitbit_api.post_update_ticket(key, ticket_id, **update_params)
-
-                self._add_comments(key, ticket_id, issue_info)
-                self._add_attachments(key, ticket_id, issue_info)
+                # JitBit overrides closeDate when closing a ticket, so update it after status change succeeds
+                if update_success and close_date and status_id == 3:
+                    self.jitbit_api.post_update_close_date(key, ticket_id, close_date)
 
                 # We update the issue on the JIRA side if the migration was successful.
                 # We use the 'Tag' field in JIRA for this
@@ -525,7 +530,9 @@ class ProcessData(object):
 
         # Build a set of timestamps that already exist in JitBit comments
         # Extract timestamp from "(Originally posted on: YYYY-MM-DD HH:MM:SS)" prefix
-        # JitBit returns HTML format: "<!--html-->(Originally posted on: YYYY-MM-DD HH:MM:SS)<br><br>..."
+        # JitBit may return different formats:
+        #   - "<!--html-->(Originally posted on: YYYY-MM-DD HH:MM:SS)<br><br>..." (HTML breaks)
+        #   - "<!--html-->(Originally posted on: YYYY-MM-DD HH:MM:SS)\n\n..." (literal newlines)
         existing_timestamps = set()
         for existing_comment in existing_comments:
             body = existing_comment.get('Body', '')
@@ -535,8 +542,13 @@ class ProcessData(object):
 
             # Check for format: "(Originally posted on: ...)"
             if body.startswith('(Originally posted on: '):
-                # Look for closing paren followed by HTML break tags
+                # Look for closing paren followed by either HTML break or newline
+                # Try <br> first (HTML format)
                 end_idx = body.find(')<br>')
+                if end_idx == -1:
+                    # Try \n format (literal newline)
+                    end_idx = body.find(')\n')
+
                 if end_idx > 23:
                     timestamp = body[23:end_idx]  # Extract the timestamp
                     existing_timestamps.add(timestamp)
