@@ -7,6 +7,7 @@ import logging
 import time
 from collections import deque
 from . import config
+from .version import __version__
 
 logger = logging.getLogger(config.LOG_ALIAS)
 
@@ -133,12 +134,16 @@ class JitbitApi(object):
             # Get authentication config
             auth, headers = self._get_auth_config()
 
+            # Add custom user-agent
+            if not headers:
+                headers = {}
+            headers['User-Agent'] = f'JiraJitsu/{__version__}'
+
             # Merge any existing headers
-            if headers:
-                if 'headers' in kwargs:
-                    kwargs['headers'].update(headers)
-                else:
-                    kwargs['headers'] = headers
+            if 'headers' in kwargs:
+                kwargs['headers'].update(headers)
+            else:
+                kwargs['headers'] = headers
 
             # Add auth if using basic auth
             if auth:
