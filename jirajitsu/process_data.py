@@ -5,12 +5,15 @@ import logging
 from datetime import datetime, timedelta
 from . import config
 import progressbar
+from rich.console import Console
+from rich.table import Table
 from .argument_parser import ArgumentParser
 from .log_handler import LogHandler
 from .jitbit_api import JitbitApi
 from .jira_api import JiraApi
 
 logger = logging.getLogger(config.LOG_ALIAS)
+console = Console()
 
 
 def convert_utc_to_central(utc_timestamp: str) -> str:
@@ -154,6 +157,18 @@ class ProcessData(object):
         self.create_missing_users = create_missing_users
         self.created_users = []  # Track created users: [(email, first_name, last_name, user_id), ...]
 
+        # Migration statistics
+        self.stats = {
+            'total_tickets': 0,
+            'tickets_created': 0,
+            'tickets_updated': 0,
+            'comments_added': 0,
+            'comments_skipped': 0,
+            'attachments_added': 0,
+            'failed_tickets': 0,
+            'cached_technicians': 0
+        }
+
         self.start_time = time.time()
 
     def __del__(self):
@@ -191,7 +206,8 @@ class ProcessData(object):
             issues_list = self.jira_api.get_filter(filter_url)
 
             # Pre-load user caches to minimize API calls during migration
-            self.jitbit_api.preload_user_caches(config.JITBIT_MIGRATE_CATEGORY_ID)
+            tech_count = self.jitbit_api.preload_user_caches(config.JITBIT_MIGRATE_CATEGORY_ID)
+            self.stats['cached_technicians'] = tech_count
 
             # Setup progress bar
             total = len(issues_list['issues'])
@@ -204,6 +220,7 @@ class ProcessData(object):
 
                 key = issue['key']
 
+                self.stats['total_tickets'] += 1
                 pbar_count += 1
                 pbar.update(pbar_count)
                 logger.info(f'[{key}] Processing: {pbar_count}{total_str}')
@@ -212,6 +229,7 @@ class ProcessData(object):
 
                 if not status:
                     logger.critical(f'[{key}] ERROR: Not able to get issue info')
+                    self.stats['failed_tickets'] += 1
                     continue
 
                 self.jira_api.get_attachment(key, issue_info)
@@ -237,7 +255,12 @@ class ProcessData(object):
                 self._migrate_to_jitbit(key, issue_info)
 
 
-            pbar.finish
+            pbar.finish()
+
+            # Display migration summary
+            end_time = time.time()
+            execution_time = end_time - self.start_time
+            self.display_summary(execution_time)
 
         except Exception as e:
             logger.critical(str(e))
@@ -474,12 +497,14 @@ class ProcessData(object):
                 # Ticket already exists - update instead of creating new
                 logger.info(f'[{key}] Ticket already exists (ID: {existing_ticket_id}), will update instead of creating new')
                 ticket_id = existing_ticket_id
+                self.stats['tickets_updated'] += 1
             else:
                 # No duplicate found - create new ticket
                 logger.info(f'[{key}] No existing ticket found, creating new ticket')
                 ticket_id = int(self.jitbit_api.post_ticket(key, category_id, subject, body, priority_id, created_by,
                                                             behalf_of=assign_to_id,
                                                             custom_fields=custom_fields if custom_fields else None))
+                self.stats['tickets_created'] += 1
 
             if ticket_id > 0:
 
@@ -509,6 +534,7 @@ class ProcessData(object):
                 # self.jira_api.post_tag(key, config.JITBIT_MIGRATION_SUCCESS)
             else:
                 logger.critical(f'ERROR: could not create a ticket in JitBit for {key}')
+                self.stats['failed_tickets'] += 1
 
         except Exception as e:
 
@@ -520,6 +546,7 @@ class ProcessData(object):
                 logger.critical(f'{str(e)} - Marked ticket {ticket_id} for deletion')
             else:
                 logger.critical(str(e))
+            self.stats['failed_tickets'] += 1
             # Don't raise let continue
 
     def _add_comments(self, key: str, ticket_id: int, issue_info: dict):
@@ -602,6 +629,10 @@ class ProcessData(object):
                 self.jitbit_api.post_comment(key, ticket_id, comment_data, comment_author_id)
                 comments_added += 1
 
+        # Accumulate to migration statistics
+        self.stats['comments_added'] += comments_added
+        self.stats['comments_skipped'] += comments_skipped
+
         if comments_skipped > 0:
             logger.info(f'[{key}] Added {comments_added} new comments, skipped {comments_skipped} duplicates')
 
@@ -620,8 +651,41 @@ class ProcessData(object):
                 # Ignore attachments of size 5K or less. These are normally logos or icons that we can skip
                 if os.path.getsize(file_dir) > 5120:
                     self.jitbit_api.post_attach_file(key, ticket_id, file_dir)
+                    self.stats['attachments_added'] += 1
                 else:
                     logger.info(f'[{key}] File size is < 5K. Ignoring. {file_dir}')
+
+    def display_summary(self, execution_time: float):
+        """
+        Display a summary table of migration statistics.
+        """
+        table = Table(title="Migration Summary", show_header=True, header_style="bold cyan")
+        table.add_column("Metric", style="cyan", no_wrap=True)
+        table.add_column("Count", justify="right", style="green")
+
+        # Format execution time
+        minutes = int(execution_time // 60)
+        seconds = int(execution_time % 60)
+        if minutes > 0:
+            time_str = f"{minutes}m {seconds}s"
+        else:
+            time_str = f"{seconds}s"
+
+        # Add rows
+        table.add_row("Total Tickets Processed", str(self.stats['total_tickets']))
+        table.add_row("Tickets Created", str(self.stats['tickets_created']))
+        table.add_row("Tickets Updated (existing)", str(self.stats['tickets_updated']))
+        table.add_row("Comments Added", str(self.stats['comments_added']))
+        table.add_row("Comments Skipped (duplicate)", str(self.stats['comments_skipped']))
+        table.add_row("Attachments Added", str(self.stats['attachments_added']))
+        table.add_row("Users Created", str(len(self.created_users)))
+        table.add_row("Technicians (cached)", str(self.stats['cached_technicians']))
+        table.add_row("Failed Tickets", str(self.stats['failed_tickets']), style="red" if self.stats['failed_tickets'] > 0 else "green")
+        table.add_row("Execution Time", time_str, style="yellow")
+
+        console.print("\n")
+        console.print(table)
+        console.print("\n")
 
 
 def main():

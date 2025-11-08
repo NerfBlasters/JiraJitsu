@@ -701,6 +701,8 @@ class JitbitApi(object):
 
         logger.info('Cache pre-loading complete - migration will use cached data')
 
+        return tech_count
+
     def search_tickets_by_jira_key(self, jira_key: str) -> int | None:
         """
         Search for an existing JitBit ticket by Jira key.
