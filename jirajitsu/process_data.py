@@ -270,9 +270,8 @@ class ProcessData(object):
     def test_jitbit(self):
 
         # Use this to test a single post to JitBit.
-        # Hardcoded key will be posted.
+        # Uses the first issue from the configured filter.
 
-        process_key = 'RFM-1'
         try:
             self.jira_api = JiraApi()
 
@@ -285,13 +284,17 @@ class ProcessData(object):
             # Run the filter and get a list of issues to deal with
             issues_list = self.jira_api.get_filter(filter_url)
 
-            # Iterate over each issue and get details
-            for issue in issues_list['issues']:
+            if not issues_list['issues']:
+                logger.critical('No issues found in filter')
+                return
 
-                key = issue['key']
+            # Use the first issue from the filter
+            issue = issues_list['issues'][0]
+            key = issue['key']
+            logger.info(f'Testing with issue: {key}')
 
-                if key != process_key:
-                    continue
+            # Process this single issue
+            if True:  # Keep indentation for easier diff
 
                 status, issue_info = self.jira_api.get_issue_info(key)
 

@@ -75,8 +75,9 @@ class JiraApi(object):
     def check_url_and_user(self) -> bool:
 
         ret = False
-        # Check URL and user authentication
-        url = config.JIRA_API_URL + '/issue/RFM-1'
+        # Check URL and user authentication by getting current user info
+        # This endpoint works regardless of which projects exist
+        url = config.JIRA_API_URL + '/myself'
         logger.info(f'Connecting to  URL: {url} ...')
 
         try:
