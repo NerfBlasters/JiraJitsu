@@ -480,13 +480,13 @@ class ProcessData(object):
 
             if ticket_id > 0:
 
-                # Update ticket with all fields in consolidated API calls
-                # Combine userId, assignedUserId, date, and statusId into single call
+                # Update ticket with consolidated API call
+                # Set status in first update call, then update closed date with another call
+                # NOTE: userId is set during ticket creation (post_ticket), not in updates
                 update_params = {
-                    'userId': created_by,  # Ticket creator/from
                     'assignedUserId': assign_to_id,
                     'date': date_created,
-                    'statusId': status_id  # Include status in first update
+                    'statusId': status_id
                 }
 
                 self.jitbit_api.post_update_ticket(key, ticket_id, **update_params)
