@@ -481,7 +481,7 @@ class ProcessData(object):
             if ticket_id > 0:
 
                 # Update ticket with consolidated API call
-                # Set status in first update call, then update closed date with another call
+                # Set all fields in one call to minimize API usage
                 # NOTE: userId is set during ticket creation (post_ticket), not in updates
                 update_params = {
                     'assignedUserId': assign_to_id,
@@ -489,17 +489,14 @@ class ProcessData(object):
                     'statusId': status_id
                 }
 
+                # Include closeDate if ticket is closed
+                if close_date:
+                    update_params['closeDate'] = close_date
+
                 self.jitbit_api.post_update_ticket(key, ticket_id, **update_params)
 
                 self._add_comments(key, ticket_id, issue_info)
                 self._add_attachments(key, ticket_id, issue_info)
-
-                # Set closeDate AFTER status is set (for closed tickets only)
-                # JitBit may require the ticket to already be closed before accepting a historical closeDate
-                # This is why closeDate is set in a separate call after status change
-                if close_date:
-                    logger.debug(f'Setting closeDate after status change: {close_date}')
-                    self.jitbit_api.post_update_ticket(key, ticket_id, closeDate=close_date)
 
                 # We update the issue on the JIRA side if the migration was successful.
                 # We use the 'Tag' field in JIRA for this
