@@ -2,6 +2,7 @@
 import os
 import time
 import logging
+import re
 from datetime import datetime, timedelta
 from . import config
 import progressbar
@@ -141,6 +142,26 @@ def calculate_close_date(issue_info: dict, assignee_email: str | None) -> str | 
     except Exception as e:
         logger.error(f'Error calculating close date: {str(e)}')
         return None
+
+
+def clean_jira_wiki_markup(text: str) -> str:
+    """
+    Remove JIRA wiki markup formatting tags from text.
+    Currently removes color tags like {color:black}, {color:#333333}, {color}
+
+    Args:
+        text: Raw JIRA wiki markup text
+
+    Returns:
+        Cleaned text with formatting tags removed
+    """
+    if not text:
+        return text
+
+    # Remove color tags: {color:...} and {color}
+    text = re.sub(r'\{color.*?\}', '', text)
+
+    return text
 
 
 class ProcessData(object):
@@ -370,6 +391,8 @@ class ProcessData(object):
 
             # Build body with null-safe concatenation
             description = issue_info['fields'].get('description') or ''
+            # Clean JIRA wiki markup tags
+            description = clean_jira_wiki_markup(description)
 
             # Add assignee info if available
             assignee_name = ''
@@ -599,6 +622,8 @@ class ProcessData(object):
 
         for comment in comments['comments']:
             comment_text = comment['body']
+            # Clean JIRA wiki markup tags
+            comment_text = clean_jira_wiki_markup(comment_text)
             # Comments can be anonymous - use default user ID
             comment_author_id = self.default_assign_id
             # Use raw timestamp from Jira (already in correct timezone)
