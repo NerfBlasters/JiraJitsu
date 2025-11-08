@@ -213,6 +213,23 @@ class ProcessData(object):
 
                 self.jira_api.get_attachment(key, issue_info)
 
+                # Log key ticket metadata
+                reporter = issue_info['fields'].get('reporter') or issue_info['fields'].get('creator', {})
+                reporter_email = reporter.get('emailAddress', 'Unknown') if reporter else 'Unknown'
+                logger.info(f'[{key}] Reporter: {reporter_email}')
+
+                assignee = issue_info['fields'].get('assignee')
+                assignee_email = assignee.get('emailAddress', 'Unassigned') if assignee else 'Unassigned'
+                logger.info(f'[{key}] Assignee: {assignee_email}')
+
+                watchers = issue_info['fields'].get('watches', {})
+                watcher_count = watchers.get('watchCount', 0)
+                logger.info(f'[{key}] Watchers: {watcher_count}')
+
+                comments = issue_info['fields'].get('comment', {})
+                comment_count = len(comments.get('comments', []))
+                logger.info(f'[{key}] JIRA Comments: {comment_count}')
+
                 # Now create this issue in JitBit
                 self._migrate_to_jitbit(key, issue_info)
 
@@ -257,6 +274,23 @@ class ProcessData(object):
                     continue
 
                 self.jira_api.get_attachment(key, issue_info)
+
+                # Log key ticket metadata
+                reporter = issue_info['fields'].get('reporter') or issue_info['fields'].get('creator', {})
+                reporter_email = reporter.get('emailAddress', 'Unknown') if reporter else 'Unknown'
+                logger.info(f'[{key}] Reporter: {reporter_email}')
+
+                assignee = issue_info['fields'].get('assignee')
+                assignee_email = assignee.get('emailAddress', 'Unassigned') if assignee else 'Unassigned'
+                logger.info(f'[{key}] Assignee: {assignee_email}')
+
+                watchers = issue_info['fields'].get('watches', {})
+                watcher_count = watchers.get('watchCount', 0)
+                logger.info(f'[{key}] Watchers: {watcher_count}')
+
+                comments = issue_info['fields'].get('comment', {})
+                comment_count = len(comments.get('comments', []))
+                logger.info(f'[{key}] JIRA Comments: {comment_count}')
 
                 # Now create this issue in JitBit
                 self._migrate_to_jitbit(key, issue_info)
@@ -305,8 +339,26 @@ class ProcessData(object):
             # We append JIRA key to subject
             subject = issue_info['fields']['summary'] + ' (' + key + ')'
 
-            body = issue_info['fields']['description'] + '\n\n' + '(Originally assigned to: ' + issue_info['fields']['assignee']['displayName'] +  ')\n' + '(Original Resolution date: ' + issue_info['fields']['resolutiondate'][:10] + ')\n'
-            if body is None:
+            # Build body with null-safe concatenation
+            description = issue_info['fields'].get('description') or ''
+
+            # Add assignee info if available
+            assignee_name = ''
+            if issue_info['fields'].get('assignee'):
+                assignee_name = issue_info['fields']['assignee'].get('displayName', '')
+
+            # Add resolution date if available
+            resolution_date = ''
+            if issue_info['fields'].get('resolutiondate'):
+                resolution_date = issue_info['fields']['resolutiondate'][:10]
+
+            # Build body with metadata only if available
+            body = description
+            if assignee_name:
+                body += f'\n\n(Originally assigned to: {assignee_name})'
+            if resolution_date:
+                body += f'\n(Original Resolution date: {resolution_date})'
+            if not body:
                 body = ''
 
             # We will set all of the priorities to Normal (0)
@@ -327,27 +379,32 @@ class ProcessData(object):
                 status_id = 1  # New/Open in JitBit
                 logger.info(f'[{key}] Mapping to JitBit New (1)')
 
-            # Created by
-            # By default this will be the person creating the ticket.
-            # You can create 'on-behalf' of another person
-            # This code will get the details of the user from JIRA
+            # Created by / Reporter
+            # Use reporter field (not creator) - reporter is who reported the issue
+            # Creator is who created it in Jira (often admins migrating from other systems)
+            # Fallback to creator if reporter doesn't exist
 
-            created_by_email = issue_info['fields']['creator']['emailAddress']
+            reporter_field = issue_info['fields'].get('reporter') or issue_info['fields'].get('creator')
+            if reporter_field:
+                created_by_email = reporter_field.get('emailAddress')
+            else:
+                created_by_email = None
+
             logger.debug(f'Variable created_by_email is [{created_by_email}]')
             created_by = self.jitbit_api.get_user_id_by_email(created_by_email)
             logger.debug(f'Variable created_by is [{created_by}]')
 
             # Auto-create user if missing and flag is set
             if created_by <= 0 and self.create_missing_users:
-                logger.info(f'[{key}] Creator {created_by_email} not found, attempting to create')
-                created_by = self._create_user_from_jira_info(issue_info['fields']['creator'])
+                logger.info(f'[{key}] Reporter {created_by_email} not found, attempting to create')
+                created_by = self._create_user_from_jira_info(reporter_field)
                 if created_by <= 0:
                     # Fall back to default if creation failed
                     logger.warning(f'[{key}] Failed to create creator, using default user')
                     created_by = self.default_assign_id
             elif created_by <= 0:
                 # No auto-create, use default
-                logger.warning(f'[{key}] Creator {created_by_email} not found, using default user')
+                logger.warning(f'[{key}] Reporter {created_by_email} not found, using default user')
                 created_by = self.default_assign_id
 
             # Get original Jira assignee info (before any JitBit mapping)
@@ -423,11 +480,13 @@ class ProcessData(object):
 
             if ticket_id > 0:
 
-                # Update ticket with creator, date, and assignee
+                # Update ticket with all fields in consolidated API calls
+                # Combine userId, assignedUserId, date, and statusId into single call
                 update_params = {
                     'userId': created_by,  # Ticket creator/from
                     'assignedUserId': assign_to_id,
-                    'date': date_created
+                    'date': date_created,
+                    'statusId': status_id  # Include status in first update
                 }
 
                 self.jitbit_api.post_update_ticket(key, ticket_id, **update_params)
@@ -435,11 +494,9 @@ class ProcessData(object):
                 self._add_comments(key, ticket_id, issue_info)
                 self._add_attachments(key, ticket_id, issue_info)
 
-                # Set status first
-                self.jitbit_api.post_set_ticket_status(key, ticket_id, status_id)
-
-                # Then set closeDate AFTER status is set (for closed tickets only)
+                # Set closeDate AFTER status is set (for closed tickets only)
                 # JitBit may require the ticket to already be closed before accepting a historical closeDate
+                # This is why closeDate is set in a separate call after status change
                 if close_date:
                     logger.debug(f'Setting closeDate after status change: {close_date}')
                     self.jitbit_api.post_update_ticket(key, ticket_id, closeDate=close_date)
@@ -488,11 +545,16 @@ class ProcessData(object):
                     existing_timestamps.add(timestamp)
                     logger.debug(f'[{key}] Extracted existing timestamp: "{timestamp}"')
 
-        logger.info(f'[{key}] Found {len(existing_comments)} existing comments with {len(existing_timestamps)} unique timestamps')
+        # Log JitBit comment status
+        logger.info(f'[{key}] Found {len(existing_comments)} existing JitBit comments ({len(existing_timestamps)} previously migrated from JIRA)')
         if existing_timestamps:
-            logger.debug(f'[{key}] Existing timestamps: {existing_timestamps}')
+            logger.debug(f'[{key}] Existing migrated timestamps: {existing_timestamps}')
 
+        # Log JIRA comment count
         comments = issue_info['fields']['comment']
+        jira_comment_count = len(comments['comments'])
+        logger.info(f'[{key}] Migrating {jira_comment_count} JIRA comments to JitBit')
+
         comments_added = 0
         comments_skipped = 0
 
