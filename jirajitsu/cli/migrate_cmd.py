@@ -132,22 +132,22 @@ def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, igno
             issues_list = jira_api.get_filter(filter_url)
 
         # Check if any issues found
-        issues = issues_list.get('issues', [])
-        if not issues:
+        issue_list = issues_list.get('issues', [])
+        if not issue_list:
             console.print("[yellow]No issues found matching criteria[/yellow]")
             return
 
-        console.print(f"[green]Found {len(issues)} issues to migrate[/green]\n")
+        console.print(f"[green]Found {len(issue_list)} issues to migrate[/green]\n")
 
         if dry_run:
             # Show preview
             console.print("[bold]Preview of issues that would be migrated:[/bold]\n")
-            display_limit = len(issues) if limit == 0 else min(limit, len(issues))
-            for i, issue in enumerate(issues[:display_limit], 1):
+            display_limit = len(issue_list) if limit == 0 else min(limit, len(issue_list))
+            for i, issue in enumerate(issue_list[:display_limit], 1):
                 console.print(f"  {i}. {issue['key']}")
 
-            if limit > 0 and len(issues) > limit:
-                console.print(f"  [dim]... and {len(issues) - limit} more (use --limit 0 to show all)[/dim]")
+            if limit > 0 and len(issue_list) > limit:
+                console.print(f"  [dim]... and {len(issue_list) - limit} more (use --limit 0 to show all)[/dim]")
 
             console.print(f"\n[bold yellow]DRY RUN COMPLETE - No migration performed[/bold yellow]")
             console.print(f"[yellow]Remove --dry-run flag to perform actual migration[/yellow]")
@@ -155,7 +155,7 @@ def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, igno
 
         # Confirm migration
         if not ctx.obj.get('QUIET'):
-            console.print(f"[bold yellow]About to migrate {len(issues)} issues from JIRA to JitBit[/bold yellow]")
+            console.print(f"[bold yellow]About to migrate {len(issue_list)} issues from JIRA to JitBit[/bold yellow]")
             if not click.confirm('Continue with migration?', default=True):
                 console.print("[yellow]Migration cancelled[/yellow]")
                 return
@@ -167,7 +167,8 @@ def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, igno
         if option_count > 0 or category_id:
             console.print("[yellow]Note: Some CLI options (category override) require additional implementation[/yellow]\n")
 
-        process_data.start()
+        # Pass the prepared issues_list to start()
+        process_data.start(issues_list=issues_list)
 
         console.print("\n[bold green]✓ Migration complete![/bold green]")
 

@@ -190,7 +190,7 @@ class ProcessData(object):
             except Exception as e:
                 logger.error(f'Failed to write created users log: {str(e)}')
 
-    def start(self):
+    def start(self, issues_list=None):
         try:
             self.jira_api = JiraApi()
 
@@ -198,12 +198,14 @@ class ProcessData(object):
             if not self.jira_api.check_url_and_user():
                 assert 'Check URL and User call failed!'
 
-            # We want to run a specific filter in JIRA.
-            # First give the filter Id and get the URL to run
-            filter_url = self.jira_api.get_filter_for_id(config.JIRA_FILTER_ID)
+            # If no issues list provided, use default filter from config
+            if issues_list is None:
+                # We want to run a specific filter in JIRA.
+                # First give the filter Id and get the URL to run
+                filter_url = self.jira_api.get_filter_for_id(config.JIRA_FILTER_ID)
 
-            # Run the filter and get a list of issues to migrate
-            issues_list = self.jira_api.get_filter(filter_url)
+                # Run the filter and get a list of issues to migrate
+                issues_list = self.jira_api.get_filter(filter_url)
 
             # Pre-load user caches to minimize API calls during migration
             tech_count = self.jitbit_api.preload_user_caches(config.JITBIT_MIGRATE_CATEGORY_ID)
