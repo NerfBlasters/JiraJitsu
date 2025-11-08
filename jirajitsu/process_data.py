@@ -294,35 +294,33 @@ class ProcessData(object):
             logger.info(f'Testing with issue: {key}')
 
             # Process this single issue
-            if True:  # Keep indentation for easier diff
+            status, issue_info = self.jira_api.get_issue_info(key)
 
-                status, issue_info = self.jira_api.get_issue_info(key)
+            if not status:
+                logger.critical(f'[{key}] ERROR: Not able to get issue info')
+                return
 
-                if not status:
-                    logger.critical(f'[{key}] ERROR: Not able to get issue info')
-                    continue
+            self.jira_api.get_attachment(key, issue_info)
 
-                self.jira_api.get_attachment(key, issue_info)
+            # Log key ticket metadata
+            reporter = issue_info['fields'].get('reporter') or issue_info['fields'].get('creator', {})
+            reporter_email = reporter.get('emailAddress', 'Unknown') if reporter else 'Unknown'
+            logger.info(f'[{key}] Reporter: {reporter_email}')
 
-                # Log key ticket metadata
-                reporter = issue_info['fields'].get('reporter') or issue_info['fields'].get('creator', {})
-                reporter_email = reporter.get('emailAddress', 'Unknown') if reporter else 'Unknown'
-                logger.info(f'[{key}] Reporter: {reporter_email}')
+            assignee = issue_info['fields'].get('assignee')
+            assignee_email = assignee.get('emailAddress', 'Unassigned') if assignee else 'Unassigned'
+            logger.info(f'[{key}] Assignee: {assignee_email}')
 
-                assignee = issue_info['fields'].get('assignee')
-                assignee_email = assignee.get('emailAddress', 'Unassigned') if assignee else 'Unassigned'
-                logger.info(f'[{key}] Assignee: {assignee_email}')
+            watchers = issue_info['fields'].get('watches', {})
+            watcher_count = watchers.get('watchCount', 0)
+            logger.info(f'[{key}] Watchers: {watcher_count}')
 
-                watchers = issue_info['fields'].get('watches', {})
-                watcher_count = watchers.get('watchCount', 0)
-                logger.info(f'[{key}] Watchers: {watcher_count}')
+            comments = issue_info['fields'].get('comment', {})
+            comment_count = len(comments.get('comments', []))
+            logger.info(f'[{key}] JIRA Comments: {comment_count}')
 
-                comments = issue_info['fields'].get('comment', {})
-                comment_count = len(comments.get('comments', []))
-                logger.info(f'[{key}] JIRA Comments: {comment_count}')
-
-                # Now create this issue in JitBit
-                self._migrate_to_jitbit(key, issue_info)
+            # Now create this issue in JitBit
+            self._migrate_to_jitbit(key, issue_info)
 
         except Exception as e:
             logger.critical(str(e))

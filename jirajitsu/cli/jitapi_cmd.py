@@ -17,14 +17,16 @@ from jirajitsu.log_handler import LogHandler
 console = Console()
 
 
-@click.command()
-@click.option('--endpoint', required=True, help='JitBit API endpoint (e.g., UserByEmail, ticket, Categories)')
-@click.option('--parameter', '-p', multiple=True, nargs=2, metavar='<name> <value>',
-              help='Parameter name and value (repeat for multiple parameters)')
+@click.command(context_settings=dict(
+    allow_extra_args=True,
+    allow_interspersed_args=True,
+    ignore_unknown_options=True
+))
+@click.argument('endpoint')
 @click.option('--method', type=click.Choice(['GET', 'POST'], case_sensitive=False), default='GET',
                 help='HTTP method (default: GET)')
 @click.pass_context
-def jitapi(ctx, endpoint, parameter, method):
+def jitapi(ctx, endpoint, method):
     """
     Manual JitBit API testing
 
@@ -32,10 +34,10 @@ def jitapi(ctx, endpoint, parameter, method):
 
     \b
     Examples:
-        jirajitsu jitapi --endpoint UserByEmail --parameter email test@example.com
-        jirajitsu jitapi --endpoint ticket --parameter id 12345
-        jirajitsu jitapi --endpoint Categories
-        jirajitsu jitapi --endpoint CreateUser --method POST --parameter email new@example.com --parameter firstName Test --parameter lastName User
+        jirajitsu jitapi UserByEmail --email test@example.com
+        jirajitsu jitapi ticket --id 12345
+        jirajitsu jitapi Categories
+        jirajitsu jitapi UpdateTicket --method POST --id 12345 --statusId 3
     """
 
     log_level = ctx.obj.get('LOG_LEVEL', 'INFO')
@@ -47,10 +49,26 @@ def jitapi(ctx, endpoint, parameter, method):
 
     console.print(f"[bold blue]JitBit API Manual Test[/bold blue]\n")
 
-    # Build parameters dictionary
+    # Parse extra args as parameters (--key value pairs)
     params = {}
-    for name, value in parameter:
-        params[name] = value
+    args = ctx.args
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg.startswith('--'):
+            # Remove -- prefix
+            key = arg[2:]
+            # Get value (next arg)
+            if i + 1 < len(args) and not args[i + 1].startswith('--'):
+                value = args[i + 1]
+                params[key] = value
+                i += 2
+            else:
+                console.print(f"[red]Error: Option {arg} requires a value[/red]")
+                sys.exit(1)
+        else:
+            console.print(f"[red]Error: Unexpected argument: {arg}[/red]")
+            sys.exit(1)
 
     # Display request info
     console.print(f"[cyan]Endpoint:[/cyan] {endpoint}")
