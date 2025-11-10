@@ -2,36 +2,351 @@
 
 This document describes the enhancements and new features added to JiraJitsu compared to the original sandpiper project.
 
-## Python 3.10+ Compatibility
+## Table of Contents
 
-- **Complete Python 3 rewrite**: All code updated to use modern Python 3.10+ features
-- **Type hints**: Full type annotations added to all function signatures for better IDE support and type checking
-- **Modern string formatting**: Converted all string formatting to f-strings
-- **Fixed exception handling**: Replaced deprecated `e.message` with `str(e)`
-- **Removed Python 2 code**: Cleaned up all urllib2 and legacy Python 2 constructs
+- [Version 1.2 Features](#version-12-features)
+- [Version 1.1 Features](#version-11-features)
+- [Version 1.0 Features](#version-10-features)
+- [Migration from Sandpiper](#migration-from-sandpiper)
 
-## Security Enhancements
+---
 
-### Hybrid Configuration System
+## Version 1.2 Features
 
-- **Environment-based secrets**: API credentials now loaded from `.env` file using python-dotenv
-- **Separated concerns**:
-  - Sensitive data (passwords, API keys) → `.env` file
-  - Non-sensitive settings (IDs, paths) → `config.yml` file
-- **No hardcoded credentials**: Removed all hardcoded passwords and API keys from source code
-- **Default user handling**: Hardcoded default email removed, now configurable
+Released: January 2025
 
-## Enhanced User Management
+### Content Management
 
-### Comment Author Tracking
+#### HTML Rendering Option
 
-JiraJitsu preserves the original comment author information:
+Cleaner content formatting with the new `--html` flag:
+
+```bash
+jirajitsu migrate --html
+```
+
+**Features:**
+- Uses JIRA's HTML-rendered content instead of raw wiki markup
+- Automatically strips internal images (192.168.x.x URLs) that won't be accessible
+- Better formatting preservation
+- Cleaner, more readable content in JitBit
+- Falls back to wiki markup if HTML not available
+
+#### JIRA Wiki Markup Cleaning
+
+Automatic removal of JIRA formatting tags:
+
+- Removes all `{color:...}` and `{color}` tags from content
+- Applied to both ticket descriptions and comments
+- Makes migrated content much more readable
+- Preserves actual content while removing visual markup
+
+**Example:**
+```
+Before: {color:black}Important message{color}
+After:  Important message
+```
+
+### Large-Scale Migration Support
+
+#### Filter Pagination
+
+Handles JIRA filters with thousands of issues:
+
+- Automatic pagination for filter results
+- JIRA API limits results to 1000 per request
+- Now fetches all pages automatically up to 10,000 total issues
+- Transparent to the user - just works
+
+**Before (v1.1):**
+- Filters with >1000 issues only returned first 1000
+
+**After (v1.2):**
+- Fetches all issues automatically with pagination
+
+#### Duplicate Detection
+
+Prevents recreating already-migrated tickets:
+
+- Checks JitBit for existing tickets before migration
+- Searches by JIRA key in ticket subject
+- Reports as "updated" instead of creating duplicates
+- Also prevents duplicate comments using timestamp comparison
+
+**Benefits:**
+- Safe to re-run migrations
+- Can migrate incrementally
+- No manual cleanup of duplicates needed
+
+### User Management Enhancements
+
+#### Auto-Create Users by Default
+
+**Breaking Change:** User creation behavior changed in v1.2
+
+**v1.1 and earlier:**
+```bash
+# Had to explicitly enable user creation
+jirajitsu migrate --create-missing-users
+```
+
+**v1.2:**
+```bash
+# Auto-creates users by default
+jirajitsu migrate
+
+# Disable with flag
+jirajitsu migrate --ignore-missing-users
+```
+
+**Features:**
+- Automatically creates missing JitBit users during migration
+- Grants technician permissions for assigned categories automatically
+- Tracks created users in migration summary
+- More intuitive default behavior
+
+#### Technician Permission Auto-Grant
+
+Automatic technician status assignment:
+
+- JitBit `create_user()` API ignores `isTechie` parameter
+- Now automatically calls `AddCategoryTechPermission` after user creation
+- Users get proper technician permissions for the migration category
+- No manual permission granting needed
+
+### Migration Statistics
+
+Beautiful summary table after migration:
+
+```
+┌─────────────────────────────┬───────┐
+│ Metric                      │ Count │
+├─────────────────────────────┼───────┤
+│ Total Tickets Processed     │   150 │
+│ Tickets Created             │   142 │
+│ Tickets Updated (existing)  │     8 │
+│ Comments Added              │   450 │
+│ Comments Skipped (duplicate)│    12 │
+│ Attachments Added           │    89 │
+│ Users Created               │    23 │
+│ Technicians (cached)        │    45 │
+│ Failed Tickets              │     0 │
+│ Execution Time              │  15m 23s │
+└─────────────────────────────┴───────┘
+```
+
+**Tracks:**
+- Total tickets processed
+- Tickets created vs. updated
+- Comments added and skipped (duplicates)
+- Attachments added
+- Users created and cached technicians
+- Execution time
+
+### API Improvements
+
+#### Custom User-Agent
+
+Identifies JiraJitsu traffic in server logs:
+
+- Sets `User-Agent: JiraJitsu/{version}` for all API requests
+- Applied to both JIRA and JitBit API clients
+- Helps with traffic monitoring and debugging
+- Better than default `python-requests/x.x.x`
+
+#### Enhanced jitapi Command
+
+Improved manual API testing tool:
+
+**Old syntax:**
+```bash
+jirajitsu jitapi --endpoint UserByEmail -p email user@example.com
+```
+
+**New syntax:**
+```bash
+jirajitsu jitapi UserByEmail --email user@example.com
+```
+
+**Features:**
+- Dynamic parameter support (no predefined flags)
+- Cleaner, more intuitive interface
+- Better error messages
+- Pretty-printed JSON responses
+
+### Bug Fixes
+
+#### Critical Fixes
+
+- **Filter Pagination**: Fixed filters with >1000 issues returning only first 1000
+- **Query Options**: Fixed --issues, --jql, --project options being ignored
+- **Comment Reopening**: Fixed tickets being reopened when comments added
+- **Close Date**: Fixed historical close dates showing current date instead
+- **Comment Deduplication**: Fixed edge case with different line break formats
+
+#### Migration Flow Improvements
+
+**Old flow (caused issues):**
+1. Create ticket
+2. Update ticket status (close)
+3. Add comments (reopens ticket!)
+
+**New flow (correct):**
+1. Create ticket
+2. Add comments
+3. Add attachments
+4. Update ticket status (stays closed)
+
+#### Close Date Preservation
+
+**Problem:** JitBit API ignores closeDate when sent with statusId
+
+**Solution:**
+- First API call: Set ticket status
+- Second API call: Set close date
+- Historical dates now preserved correctly
+
+---
+
+## Version 1.1 Features
+
+Released: November 2024
+
+### Token Authentication Support
+
+Modern authentication methods for both JIRA and JitBit:
+
+#### JIRA Authentication
+
+**JIRA Cloud:**
+```ini
+JIRA_AUTH_METHOD=token
+JIRA_USER=your.email@company.com
+JIRA_TOKEN=your_api_token
+```
+
+**JIRA Server/DC:**
+```ini
+JIRA_AUTH_METHOD=token
+JIRA_TOKEN=your_personal_access_token
+# Note: Do not set JIRA_USER for PAT
+```
+
+**Legacy Basic Auth:**
+```ini
+JIRA_AUTH_METHOD=basic
+JIRA_USER=username
+JIRA_PWD=password
+```
+
+#### JitBit Authentication
+
+**Token (Recommended):**
+```ini
+JITBIT_AUTH_METHOD=token
+JITBIT_TOKEN=your_api_token
+```
+
+**Basic Auth:**
+```ini
+JITBIT_AUTH_METHOD=basic
+JITBIT_USER=username
+JITBIT_PWD=password
+```
+
+### Interactive Setup Wizard
+
+Guided configuration with the `jirajitsu setup` command:
+
+**Features:**
+- Loads existing configuration as defaults
+- Shows current values when updating
+- Smart password/token handling
+- Detects auth method switching
+- URL normalization
+- Connection validation
+- Automatic configuration backups
+- Interactive defaults from API (categories, filters, etc.)
+
+**Benefits:**
+- No need to manually edit config files
+- Catches configuration errors early
+- Validates API connections before migration
+- Safe updates with automatic backups
+
+### Enhanced Validation
+
+Better pre-migration checks:
+
+```bash
+# Validate user mappings
+jirajitsu validate users
+
+# Create missing users during validation
+jirajitsu validate users --create-missing
+
+# Validate configuration
+jirajitsu validate config
+
+# Preview filter results
+jirajitsu validate filter
+```
+
+**Improvements:**
+- Shows unique email counts
+- Clearer messaging
+- Better permission error messages
+- Limit options for large datasets
+
+### Critical API Fixes
+
+Fixed several JitBit API bugs:
+
+1. **Authorization endpoint**: Changed GET → POST (per API docs)
+2. **AttachFile endpoint**: Fixed parameter name `file` → `uploadFile`
+3. **User endpoint**: Fixed parameter name `id` → `userId`
+4. **User endpoint**: Fixed response field `IsTechie` → `IsTech`
+5. **URL normalization**: Fixed duplicate protocol prefix handling
+
+**Impact:**
+- File attachments now work correctly
+- Technician status detection works
+- Authentication is more reliable
+
+---
+
+## Version 1.0 Features
+
+Initial release: November 2024
+
+### Python 3.10+ Compatibility
+
+**Complete modern Python rewrite:**
+- Type hints throughout codebase
+- Modern string formatting (f-strings)
+- Proper exception handling
+- Async-ready architecture
+- No Python 2 legacy code
+
+### Security Enhancements
+
+#### Hybrid Configuration System
+
+Separated sensitive and non-sensitive data:
+
+- **`.env` file**: API credentials, passwords, tokens
+- **`config.yml` file**: Settings, IDs, paths, options
+- **No hardcoded credentials**: All sensitive data in environment variables
+- **python-dotenv integration**: Secure credential loading
+
+### Enhanced User Management
+
+#### Comment Author Tracking
+
+Preserves original comment authors:
 
 ```python
-# Old (sandpiper):
-comment_author = 'Unknown'
-
-# New (JiraJitsu):
+# Looks up JIRA comment author in JitBit
 comment_author = comment['updateAuthor']['emailAddress']
 comment_author_id = self.jitbit_api.get_user_id_by_email(comment_author)
 ```
@@ -41,25 +356,24 @@ comment_author_id = self.jitbit_api.get_user_id_by_email(comment_author)
 - Email-based user lookup from JIRA to JitBit
 - Falls back to default user for anonymous comments
 
-### Comment Timestamps
+#### Comment Timestamps
 
-Comments now include original posting date:
+Comments include original posting dates:
 
 ```
-(Originally posted on: 2024-01-15)
+(Originally posted on: 2024-01-15 14:30:00)
 
 [Original comment text here]
 ```
 
-### Technician Flag Validation
+#### Technician Flag Validation
 
-New `get_user_is_technician()` method validates user permissions:
+Validates user permissions before assignment:
 
 ```python
 is_technician = self.jitbit_api.get_user_is_technician(assign_to_id)
 if not is_technician:
-    logger.warning(f'User {assign_to_id} is not a technician, using default')
-    assign_to_id = self.default_assign_id
+    assign_to_id = self.default_assign_id  # Fallback
 ```
 
 **Benefits:**
@@ -67,21 +381,11 @@ if not is_technician:
 - Automatic fallback to default technician
 - Reduces ticket routing errors
 
-### Default Author ID Logic
+### Metadata Preservation
 
-Improved handling of missing/invalid comment authors:
+#### Assignee Name Preservation
 
-```python
-# Comments now properly fall back to default user
-if comment_author_id <= 0:
-    comment_author_id = self.default_assign_id
-```
-
-## Metadata Preservation
-
-### Assignee Name Preservation
-
-Original JIRA assignee name added to ticket body:
+Original JIRA assignee stored in ticket body:
 
 ```
 [Original ticket description]
@@ -90,184 +394,151 @@ Original JIRA assignee name added to ticket body:
 (Original Resolution date: 2024-01-15)
 ```
 
-### Timestamp Preservation
+**Note:** Starting in v1.2, also stored in custom field for better tracking
 
-Original creation date now passed to JitBit:
+#### Timestamp Preservation
 
-```python
-date_created = issue_info['fields']['created']
-self.jitbit_api.post_update_ticket(key, ticket_id,
-                                    assignedUserId=assign_to_id,
-                                    date=date_created)
-```
+Original timestamps maintained:
 
-**Benefits:**
-- Historical accuracy maintained
-- Proper aging reports in JitBit
-- Audit trail preservation
+- **Creation date**: Preserved from JIRA
+- **Resolution date**: Preserved from JIRA
+- **Comment timestamps**: All preserved with "(Originally posted on: ...)" prefix
 
-## API Improvements
+### API Improvements
 
-### Universal Update Method
+#### Universal Update Method
 
-New `post_update_ticket()` method consolidates ticket updates:
+New `post_update_ticket()` method:
 
 ```python
-def post_update_ticket(self, key: str, ticket_id: int, **kwargs) -> bool:
-    """
-    Universal method to update any ticket parameters.
-    Accepts any valid UpdateTicket API parameters as kwargs.
-    """
+# Update any ticket field(s) with kwargs
+self.jitbit_api.post_update_ticket(
+    key, ticket_id,
+    assignedUserId=user_id,
+    date=created_date,
+    statusId=status_id
+)
 ```
-
-**Supported parameters:**
-- `assignedUserId`: Assign to user
-- `date`: Created date
-- `categoryId` / `newCategoryId`: Category
-- `priorityId`: Priority
-- `statusId`: Status
-- `dueDate`: Due date
-- `tags`: Tags
-- `subject`: Subject
-- `body`: Body
-- `timeSpentInSeconds`: Time spent
 
 **Benefits:**
 - Single method for all updates
 - Reduces code duplication
-- Easier to extend with new parameters
-- Backward compatible (legacy methods still work)
+- Type-safe with kwargs
+- Extensible for future fields
 
-### Enhanced Error Messages
+#### Better Error Handling
 
-All error messages now use f-strings for clarity:
+Comprehensive error handling:
 
-```python
-# Old:
-logger.critical('[{key}] ERROR: Unable to connect to URL: {url}'.format(key=key, url=url))
+- Individual ticket failures don't stop migration
+- Failed tickets moved to "deleted" category
+- All errors logged with full details
+- Progress bar shows migration status
 
-# New:
-logger.critical(f'[{key}] ERROR: Unable to connect to URL: {url}')
-```
+### Logging Enhancements
 
-## Testing Infrastructure
+Better debugging and monitoring:
 
-### Pytest Framework
+- **Rotating file handlers**: Automatic log rotation
+- **Configurable log levels**: DEBUG, INFO, WARNING, ERROR
+- **Detailed API logging**: All API calls logged with parameters
+- **Progress tracking**: Real-time progress bars
+- **Rich console output**: Colored, formatted console output
 
-- Comprehensive test suite with pytest
-- Test fixtures for common scenarios
-- Mock-based testing (no live API calls needed)
-- Tests for all major components:
-  - Configuration loading
-  - JIRA API methods
-  - JitBit API methods
+### Testing Infrastructure
 
-### Test Coverage
+Comprehensive test suite:
 
-```bash
-pytest --cov=jirajitsu tests/
-```
+- pytest-based testing
+- Code coverage tracking
+- Type checking with mypy
+- Fixtures for API mocking
+- Integration tests
 
-Example tests:
-- Config loading with environment variables
-- API authentication
-- User lookup and validation
-- Ticket creation and updates
-- Error handling
+---
 
-## Code Quality Improvements
+## Migration from Sandpiper
 
-### Type Hints
+### Breaking Changes
 
-All functions now have type annotations:
+1. **Package name**: `sandpiper` → `jirajitsu`
+2. **Log alias**: `sandpiper_log` → `jirajitsu_log`
+3. **Configuration**: Credentials must be in `.env` file (not `config.yml`)
+4. **Python version**: Requires Python 3.10+ (Python 2 not supported)
+5. **Invocation**: Script-based → CLI commands
+   - Old: `python -m jirajitsu.process_data`
+   - New: `jirajitsu migrate`
 
-```python
-def get_user_id_by_email(self, email: str) -> int:
-    """Get JitBit user ID from email address."""
-    ...
+### Migration Steps
 
-def get_issue_info(self, key: str) -> tuple[bool, dict | None]:
-    """Get detailed issue information from JIRA."""
-    ...
-```
+1. **Update Python**: Ensure Python 3.10+ is installed
+2. **Install JiraJitsu**: `pip install -e .`
+3. **Run setup wizard**: `jirajitsu setup`
+4. **Migrate configuration**:
+   - Move credentials from `config.yml` to `.env`
+   - Update config file structure
+5. **Test connection**: `jirajitsu config test-connection`
+6. **Validate setup**: `jirajitsu validate users`
+7. **Run migration**: `jirajitsu migrate`
 
-### Removed Dead Code
+### Feature Comparison
 
-- Deleted commented urllib2 methods
-- Removed unused imports (urllib.request, urllib.error)
-- Cleaned up experimental code
+| Feature | Sandpiper | JiraJitsu v1.0 | JiraJitsu v1.2 |
+|---------|-----------|----------------|----------------|
+| Python Version | 2.7 | 3.10+ | 3.10+ |
+| Configuration | YAML only | .env + YAML | .env + YAML |
+| Authentication | Basic only | Basic + Token | Basic + Token |
+| User Interface | Script | CLI | CLI |
+| Setup | Manual editing | Manual/Wizard | Interactive Wizard |
+| User Creation | Manual | Manual | Automatic |
+| Duplicate Detection | No | No | Yes |
+| Filter Pagination | No | No | Yes |
+| HTML Rendering | No | No | Yes |
+| Migration Stats | No | No | Yes |
+| Comment Timestamps | No | Yes | Yes |
+| Technician Validation | No | Yes | Yes |
+| Testing | None | pytest | pytest |
+| Type Hints | No | Yes | Yes |
 
-### Improved Logging
+### Why Upgrade?
 
-- All logs use f-strings
-- Consistent log format throughout
-- Debug logs for troubleshooting user lookups
-- Warning logs for fallback scenarios
+**From Sandpiper to JiraJitsu 1.2:**
+- Modern Python with type safety
+- Secure credential management
+- Token authentication support
+- Interactive setup wizard
+- Automatic user creation
+- Duplicate detection
+- Large filter support (>1000 issues)
+- HTML content rendering
+- Migration statistics
+- Better error handling
+- Comprehensive logging
+- Active maintenance
 
-## Attachment Handling Improvements
+**Bottom line:** JiraJitsu 1.2 is production-ready, secure, and feature-rich compared to the original sandpiper project.
 
-### Smart File Filtering
-
-Automatically skips small files (< 5KB):
-
-```python
-if os.path.getsize(file_dir) > 5120:
-    self.jitbit_api.post_attach_file(key, ticket_id, file_dir)
-else:
-    logger.info(f'[{key}] File size is < 5K. Ignoring. {file_dir}')
-```
-
-### Better Logging
-
-Detailed logging for attachment operations:
-- Download progress
-- File size information
-- Skip reasons
-
-## Configuration Improvements
-
-### Better Error Messages
-
-Clearer assertion messages for missing config:
-
-```python
-assert JITBIT_API_URL is not None, 'JITBIT_API_URL must be set in .env file'
-assert JITBIT_USER is not None, 'JITBIT_USER must be set in .env file'
-```
-
-### Flexible Defaults
-
-Optional configuration parameters with sensible defaults:
-
-```python
-LOG_DIR = data.get('log_dir', base_dir_name + os.sep + '..' + os.sep + 'logs')
-LOG_MAX_BYTES = data.get('log_max_bytes', 10485760)  # 10MB
-LOG_BACKUP_COUNT = data.get('log_backup_count', 5)
-```
-
-## Migration Path from Sandpiper
-
-See [CHANGELOG.md](../CHANGELOG.md) for detailed migration instructions.
-
-### Quick Summary:
-
-1. Rename package references from `sandpiper` to `jirajitsu`
-2. Move credentials from `config.yml` to `.env`
-3. Update Python to 3.10+
-4. Update any custom code using the API
+---
 
 ## Future Enhancements
 
-Potential areas for future development:
+Potential features for future versions:
 
-1. **Bulk Operations**: Batch API calls for better performance
-2. **Resume Capability**: Save progress and resume interrupted migrations
-3. **Dry Run Mode**: Preview changes without actually migrating
-4. **Custom Field Mapping**: Configurable field mappings between JIRA and JitBit
-5. **Parallel Processing**: Migrate multiple tickets concurrently
-6. **Web UI**: Optional web interface for monitoring migrations
-7. **Webhook Support**: Real-time synchronization between systems
+- **Incremental sync**: Continuous synchronization mode
+- **Custom field mapping**: Configure which JIRA fields map to JitBit
+- **Webhook support**: Real-time migration triggers
+- **Rollback capability**: Undo migrations
+- **Multi-project migrations**: Migrate multiple projects in one run
+- **Advanced filtering**: More complex JQL query building
+- **Export/import**: Migration templates and configurations
+- **Audit trail**: Detailed migration history tracking
+
+---
 
 ## Contributing
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for information on contributing new features.
+Want to add a feature? See [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines.
+
+Found a bug? Open an issue on the project repository.
+
+Need help? Check the [README.md](../README.md) or [CLI_USAGE_GUIDE.md](../CLI_USAGE_GUIDE.md).

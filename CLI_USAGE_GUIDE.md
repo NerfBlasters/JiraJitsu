@@ -277,12 +277,23 @@ jirajitsu users create \
 
 Perform issue migration.
 
+**Note**: By default, migration automatically creates missing JitBit users. Use `--ignore-missing-users` to disable this behavior.
+
 ```bash
-# Basic migration with default filter
+# Basic migration with default filter (auto-creates missing users)
 jirajitsu migrate
 
 # Preview before migrating
 jirajitsu migrate --dry-run
+
+# Preview with limited output
+jirajitsu migrate --dry-run --limit 10
+
+# Use HTML-rendered content (cleaner formatting)
+jirajitsu migrate --html
+
+# Disable auto-create users (use default assignee instead)
+jirajitsu migrate --ignore-missing-users
 
 # Use specific filter
 jirajitsu migrate --filter-id 10001
@@ -301,10 +312,20 @@ jirajitsu migrate --issues RFM-1,RFM-2,RFM-3
 
 # Override destination category
 jirajitsu migrate --category-id 12345
-
-# Auto-create missing users
-jirajitsu migrate --create-missing-users
 ```
+
+#### Migrate Options
+
+- `--filter-id INTEGER` - Override default JIRA filter ID
+- `--jql TEXT` - Use custom JQL query instead of filter
+- `--project TEXT` - Migrate specific project
+- `--range TEXT` - Issue range (e.g., 100:200), requires --project
+- `--issues TEXT` - Comma-separated list of issue keys
+- `--category-id INTEGER` - Override JitBit destination category ID
+- `--ignore-missing-users` - Do NOT auto-create missing users (use default assignee)
+- `--html` - Use HTML-rendered content instead of wiki markup (strips internal images)
+- `--dry-run` - Preview what would be migrated without migrating
+- `--limit INTEGER` - Number of issues to display in dry-run (0 for all, default: 20)
 
 ### jirajitsu test
 
@@ -314,6 +335,49 @@ Test single issue migration.
 jirajitsu test --issue RFM-123
 jirajitsu test --issue RFM-123 --verbose  # Detailed output
 ```
+
+### jirajitsu jitapi
+
+Manual JitBit API testing tool.
+
+Test JitBit API endpoints directly for debugging and exploration.
+
+```bash
+# Syntax: jirajitsu jitapi <endpoint> --param value --param value
+
+# Get user by email
+jirajitsu jitapi UserByEmail --email user@example.com
+
+# Get ticket details
+jirajitsu jitapi ticket --id 12345
+
+# Get ticket comments
+jirajitsu jitapi comments --id 12345
+
+# List all categories
+jirajitsu jitapi Categories
+
+# Get category details
+jirajitsu jitapi category --id 123
+
+# Update ticket (POST request)
+jirajitsu jitapi UpdateTicket --method POST --id 12345 --statusId 3
+
+# Get technicians for a category
+jirajitsu jitapi TechsForCategory --id 123
+```
+
+#### JitApi Options
+
+- `--method {GET|POST}` - HTTP method (default: GET)
+- `--<param> <value>` - Dynamic parameters passed to the API endpoint
+
+The command automatically:
+- Constructs the full API URL
+- Adds authentication headers
+- Pretty-prints JSON responses
+- Shows HTTP status codes
+- Handles errors gracefully
 
 ## Common Workflows
 

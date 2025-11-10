@@ -253,6 +253,60 @@ Describe testing performed
 3. Address feedback
 4. Approval and merge
 
+## Documentation Guidelines
+
+When adding new features or changing existing functionality, update the relevant documentation:
+
+### Files to Update
+
+1. **README.md** - For major features or user-facing changes
+   - Update feature list if adding new capability
+   - Add to usage examples if new CLI command/option
+   - Update troubleshooting if addressing common issues
+
+2. **CLI_USAGE_GUIDE.md** - For CLI changes
+   - Add new commands or options
+   - Update examples
+   - Fix incorrect command references
+   - Add to Common Workflows if relevant
+
+3. **CHANGELOG.md** - For all changes
+   - Add entry under "Unreleased" or current version
+   - Follow Keep a Changelog format (Added/Changed/Fixed/Removed)
+   - Include clear description of changes
+   - Note any breaking changes
+
+4. **INSTALLATION.md** - For setup/configuration changes
+   - Update installation steps if dependencies change
+   - Add new configuration options
+   - Update authentication examples if auth methods change
+
+5. **docs/NEW_FEATURES.md** - For significant new features
+   - Document under appropriate version section
+   - Include examples and use cases
+   - Explain benefits and trade-offs
+
+### Documentation Checklist
+
+When submitting a PR with new features:
+
+- [ ] Updated command help text (if CLI change)
+- [ ] Added examples to relevant docs
+- [ ] Updated CHANGELOG.md
+- [ ] Fixed any outdated information your change affects
+- [ ] Tested all code examples in documentation
+- [ ] Used generic project names in examples (not hardcoded projects)
+- [ ] Checked for broken internal links
+
+### Documentation Style
+
+- **Use clear, concise language**
+- **Provide working examples** that users can copy/paste
+- **Use code blocks** with proper syntax highlighting
+- **Include both basic and advanced examples** when relevant
+- **Explain the "why"** not just the "how"
+- **Keep examples generic** - don't reference specific project names unless illustrative
+
 ## Areas for Contribution
 
 ### High Priority
@@ -265,14 +319,18 @@ Describe testing performed
 
 ### Feature Ideas
 
-- Bulk API operations
+Potential enhancements for future versions:
+
+- Bulk API operations for better performance
 - Resume capability for interrupted migrations
-- Dry-run mode
 - Custom field mapping configuration
-- Parallel processing
+- Parallel processing for large migrations
 - Progress reporting webhooks
-- CLI improvements (--verbose, --quiet, etc.)
-- Support for other issue trackers
+- Real-time incremental sync mode
+- Support for other issue trackers (GitHub Issues, GitLab, etc.)
+- Advanced JQL query builder
+- Migration rollback capability
+- Export/import of migration configurations
 
 ### Bug Fixes
 
