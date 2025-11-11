@@ -15,6 +15,42 @@ logger = logging.getLogger(config.LOG_ALIAS)
 Wrapper class for all JitBit APIs
 """
 
+
+def is_valid_email(email: str) -> bool:
+    """
+    Perform basic sanity check on email address format.
+    Checks: not empty, contains '@', has '.' after '@'
+
+    This is a minimal check to catch obvious typos while accepting all RFC-valid formats
+    including internationalized domains, plus-addressing, subdomains, etc.
+
+    Args:
+        email: Email address to validate
+
+    Returns:
+        True if email passes basic sanity checks, False otherwise
+    """
+    if not email or not isinstance(email, str):
+        return False
+
+    # Must contain '@'
+    if '@' not in email:
+        return False
+
+    # Split on @ to get local and domain parts
+    local, _, domain = email.partition('@')
+
+    # Both parts must be non-empty
+    if not local or not domain:
+        return False
+
+    # Domain must contain at least one '.' (for TLD)
+    if '.' not in domain:
+        return False
+
+    return True
+
+
 class JitbitApi(object):
 
     def __init__(self, base_data=None, data_set_alias_dir=None, master_data_dir=None, debug=None):
@@ -765,6 +801,11 @@ class JitbitApi(object):
         Note: Technician permissions are assigned per-category via AddCategoryTechPermission API,
               not during user creation.
         """
+        # Validate email format
+        if not is_valid_email(email):
+            logger.error(f'Invalid email address: {email}')
+            return -1
+
         url = config.JITBIT_API_URL + '/CreateUser'
         logger.info(f'Creating user: {first_name} {last_name} ({email})')
 

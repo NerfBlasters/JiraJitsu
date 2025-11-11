@@ -6,6 +6,9 @@ Project tasks and feature tracking.
 
 ### High Priority
 
+- [ ] **Improved technician check handling** - Verify user is enabled before adding to technician cache
+  - Check `Disabled` field in user data before caching as technician
+  - Prevents assignment failures from disabled users
 - [ ] **Better debug logging** - Include full response bodies in debug mode
 - [ ] **Failed tickets log** - Save failed tickets to separate log file with copy-pasteable issue list for retry
 

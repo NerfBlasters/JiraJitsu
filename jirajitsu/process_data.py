@@ -10,8 +10,9 @@ from rich.console import Console
 from rich.table import Table
 from .argument_parser import ArgumentParser
 from .log_handler import LogHandler
-from .jitbit_api import JitbitApi
+from .jitbit_api import JitbitApi, is_valid_email
 from .jira_api import JiraApi
+import bleach
 
 logger = logging.getLogger(config.LOG_ALIAS)
 console = Console()
@@ -182,6 +183,50 @@ def strip_internal_images(html: str) -> str:
     html = re.sub(r'<img[^>]*src=["\'][^"\']*192\.168\.[^"\']*["\'][^>]*>', '', html, flags=re.IGNORECASE)
 
     return html
+
+
+def sanitize_jira_html(html: str) -> str:
+    """
+    Sanitize HTML from JIRA renderedFields to prevent XSS while preserving formatting.
+    Uses allowlist-based filtering to remove potentially malicious HTML/JavaScript.
+    Also removes internal IP image references.
+
+    Args:
+        html: HTML content from JIRA
+
+    Returns:
+        Sanitized HTML safe for use in JitBit
+    """
+    if not html:
+        return html
+
+    # Define allowed HTML tags (typical JIRA rendered content)
+    ALLOWED_TAGS = [
+        'p', 'b', 'strong', 'em', 'i', 'u', 'a', 'ul', 'ol', 'li',
+        'br', 'table', 'tr', 'td', 'th', 'thead', 'tbody',
+        'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+        'pre', 'code', 'blockquote', 'img', 'span', 'div', 'hr'
+    ]
+
+    # Define allowed attributes per tag
+    ALLOWED_ATTRIBUTES = {
+        'a': ['href', 'title'],
+        'img': ['src', 'alt', 'title', 'width', 'height'],
+        '*': ['class']  # Allow class attribute on all tags (for JIRA CSS classes)
+    }
+
+    # First remove internal IP images (custom business logic)
+    html = strip_internal_images(html)
+
+    # Then sanitize HTML to remove dangerous tags/attributes (XSS protection)
+    clean_html = bleach.clean(
+        html,
+        tags=ALLOWED_TAGS,
+        attributes=ALLOWED_ATTRIBUTES,
+        strip=True  # Strip disallowed tags rather than escape them
+    )
+
+    return clean_html
 
 
 class ProcessData(object):
@@ -384,6 +429,11 @@ class ProcessData(object):
             logger.warning('Cannot create user without email address')
             return -1
 
+        # Validate email format
+        if not is_valid_email(email):
+            logger.error(f'Invalid email address from JIRA: {email}')
+            return -1
+
         # Parse name from displayName
         name_parts = display_name.split()
         first_name = name_parts[0] if len(name_parts) > 0 else display_name
@@ -414,9 +464,9 @@ class ProcessData(object):
 
             # Build body with null-safe concatenation
             if self.use_html and issue_info.get('renderedFields') and issue_info['renderedFields'].get('description'):
-                # Use HTML-rendered description and strip internal images
+                # Use HTML-rendered description and sanitize it (removes XSS, internal images)
                 description = issue_info['renderedFields']['description']
-                description = strip_internal_images(description)
+                description = sanitize_jira_html(description)
             else:
                 # Use wiki markup and clean color tags
                 description = issue_info['fields'].get('description') or ''
@@ -652,7 +702,7 @@ class ProcessData(object):
             # Use HTML-rendered or wiki markup based on flag
             if self.use_html and comment.get('renderedBody'):
                 comment_text = comment['renderedBody']
-                comment_text = strip_internal_images(comment_text)
+                comment_text = sanitize_jira_html(comment_text)
             else:
                 comment_text = comment['body']
                 comment_text = clean_jira_wiki_markup(comment_text)
