@@ -23,20 +23,26 @@ console = Console()
 @click.option('--range', 'issue_range', type=str, help='Issue range (e.g., 100:200) - requires --project')
 @click.option('--issues', type=str, help='Comma-separated list of issue keys (e.g., RFM-1,RFM-2)')
 @click.option('--category-id', type=int, help='Override JitBit destination category ID')
-@click.option('--create-missing-users', is_flag=True, help='Automatically create missing JitBit users')
+@click.option('--ignore-missing-users', is_flag=True, help='Do not create missing JitBit users (use JITBIT_DEFAULT_ASSIGN_EMAIL instead)')
+@click.option('--html', is_flag=True, help='Use HTML-rendered content from JIRA instead of wiki markup')
 @click.option('--dry-run', is_flag=True, help='Show what would be migrated without migrating')
 @click.option('--limit', type=int, default=20, help='Number of issues to display in dry-run (0 for all, default: 20)')
 @click.pass_context
-def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, create_missing_users, dry_run, limit):
+def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, ignore_missing_users, html, dry_run, limit):
     """
     Migrate issues from JIRA to JitBit
 
-    By default, uses the filter ID from config.yml. Can be overridden with various options.
+    By default, uses the filter ID from config.yml and automatically creates missing JitBit
+    users. Missing users will be assigned to JITBIT_DEFAULT_ASSIGN_EMAIL if --ignore-missing-users
+    is specified.
 
     Examples:
 
-        # Use default filter from config
+        # Use default filter from config (creates missing users)
         jirajitsu migrate
+
+        # Ignore missing users (use default assignee instead)
+        jirajitsu migrate --ignore-missing-users
 
         # Use specific filter
         jirajitsu migrate --filter-id 10000
@@ -49,6 +55,9 @@ def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, crea
 
         # Migrate specific issues
         jirajitsu migrate --issues RFM-1,RFM-2,RFM-3
+
+        # Use HTML-rendered content (cleaner formatting, internal images stripped)
+        jirajitsu migrate --html
 
         # Preview without migrating
         jirajitsu migrate --dry-run
@@ -73,7 +82,9 @@ def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, crea
 
         # Initialize APIs
         jira_api = JiraApi()
-        process_data = ProcessData(create_missing_users=create_missing_users)
+        # By default, create missing users. Only disable if --ignore-missing-users is set
+        create_missing_users = not ignore_missing_users
+        process_data = ProcessData(create_missing_users=create_missing_users, use_html=html)
 
         # Override category if specified
         if category_id:
@@ -83,8 +94,17 @@ def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, crea
             console.print("[yellow]Note: Category override requires code modification to fully implement[/yellow]")
 
         # Show create missing users status
-        if create_missing_users:
+        if ignore_missing_users:
+            console.print("[yellow]Auto-create missing users: DISABLED[/yellow]")
+            console.print(f"[yellow]Missing users will be assigned to: {config.JITBIT_DEFAULT_ASSIGN_EMAIL}[/yellow]")
+        else:
             console.print("[cyan]Auto-create missing users: ENABLED[/cyan]")
+
+        # Show HTML rendering status
+        if html:
+            console.print("[cyan]Content format: HTML-rendered (internal images will be stripped)[/cyan]")
+        else:
+            console.print("[cyan]Content format: Wiki markup (color tags removed)[/cyan]")
 
         # Determine which issues to migrate
         if issues:
@@ -122,22 +142,22 @@ def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, crea
             issues_list = jira_api.get_filter(filter_url)
 
         # Check if any issues found
-        issues = issues_list.get('issues', [])
-        if not issues:
+        issue_list = issues_list.get('issues', [])
+        if not issue_list:
             console.print("[yellow]No issues found matching criteria[/yellow]")
             return
 
-        console.print(f"[green]Found {len(issues)} issues to migrate[/green]\n")
+        console.print(f"[green]Found {len(issue_list)} issues to migrate[/green]\n")
 
         if dry_run:
             # Show preview
             console.print("[bold]Preview of issues that would be migrated:[/bold]\n")
-            display_limit = len(issues) if limit == 0 else min(limit, len(issues))
-            for i, issue in enumerate(issues[:display_limit], 1):
+            display_limit = len(issue_list) if limit == 0 else min(limit, len(issue_list))
+            for i, issue in enumerate(issue_list[:display_limit], 1):
                 console.print(f"  {i}. {issue['key']}")
 
-            if limit > 0 and len(issues) > limit:
-                console.print(f"  [dim]... and {len(issues) - limit} more (use --limit 0 to show all)[/dim]")
+            if limit > 0 and len(issue_list) > limit:
+                console.print(f"  [dim]... and {len(issue_list) - limit} more (use --limit 0 to show all)[/dim]")
 
             console.print(f"\n[bold yellow]DRY RUN COMPLETE - No migration performed[/bold yellow]")
             console.print(f"[yellow]Remove --dry-run flag to perform actual migration[/yellow]")
@@ -145,7 +165,7 @@ def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, crea
 
         # Confirm migration
         if not ctx.obj.get('QUIET'):
-            console.print(f"[bold yellow]About to migrate {len(issues)} issues from JIRA to JitBit[/bold yellow]")
+            console.print(f"[bold yellow]About to migrate {len(issue_list)} issues from JIRA to JitBit[/bold yellow]")
             if not click.confirm('Continue with migration?', default=True):
                 console.print("[yellow]Migration cancelled[/yellow]")
                 return
@@ -157,7 +177,8 @@ def migrate(ctx, filter_id, jql, project, issue_range, issues, category_id, crea
         if option_count > 0 or category_id:
             console.print("[yellow]Note: Some CLI options (category override) require additional implementation[/yellow]\n")
 
-        process_data.start()
+        # Pass the prepared issues_list to start()
+        process_data.start(issues_list=issues_list)
 
         console.print("\n[bold green]✓ Migration complete![/bold green]")
 

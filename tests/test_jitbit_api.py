@@ -244,3 +244,67 @@ def test_rate_limit_sliding_window(jitbit_api):
 
     # Should be nearly instant since old requests are expired
     assert elapsed < 1.0  # Should take less than 1 second
+
+
+# Email Validation Tests
+
+def test_is_valid_email_with_valid_emails():
+    """Test email validation accepts valid email formats"""
+    from jirajitsu.jitbit_api import is_valid_email
+
+    # Standard formats
+    assert is_valid_email('user@example.com') is True
+    assert is_valid_email('first.last@example.com') is True
+    assert is_valid_email('user@example.co.uk') is True
+
+    # Plus addressing
+    assert is_valid_email('user+tag@example.com') is True
+
+    # Subdomains
+    assert is_valid_email('user@mail.subdomain.example.com') is True
+
+    # Numbers and hyphens
+    assert is_valid_email('user123@example-domain.com') is True
+
+
+def test_is_valid_email_with_invalid_emails():
+    """Test email validation rejects invalid email formats"""
+    from jirajitsu.jitbit_api import is_valid_email
+
+    # Empty/None
+    assert is_valid_email('') is False
+    assert is_valid_email(None) is False
+
+    # Missing parts
+    assert is_valid_email('user@') is False
+    assert is_valid_email('@example.com') is False
+    assert is_valid_email('nodomain') is False
+
+    # Missing TLD
+    assert is_valid_email('user@nodot') is False
+
+    # Wrong type
+    assert is_valid_email(123) is False
+    assert is_valid_email(['user@example.com']) is False
+
+
+@patch('jirajitsu.jitbit_api.requests.request')
+def test_create_user_rejects_invalid_email(mock_request, jitbit_api):
+    """Test create_user rejects invalid email addresses"""
+    # Should return -1 without making API request
+    result = jitbit_api.create_user('invalid-email', 'First', 'Last')
+    assert result == -1
+    assert mock_request.call_count == 0
+
+
+@patch('jirajitsu.jitbit_api.requests.request')
+def test_create_user_accepts_valid_email(mock_request, jitbit_api):
+    """Test create_user accepts valid email addresses"""
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.text = '42'
+    mock_request.return_value = mock_response
+
+    result = jitbit_api.create_user('valid@example.com', 'First', 'Last')
+    assert result == 42
+    assert mock_request.call_count == 1

@@ -8,6 +8,7 @@ import os
 import shutil
 import logging
 from . import config
+from .version import __version__
 
 logger = logging.getLogger(config.LOG_ALIAS)
 
@@ -55,12 +56,16 @@ class JiraApi(object):
         """
         auth, headers = self._get_auth_config()
 
+        # Add custom user-agent
+        if not headers:
+            headers = {}
+        headers['User-Agent'] = f'JiraJitsu/{__version__}'
+
         # Merge any existing headers
-        if headers:
-            if 'headers' in kwargs:
-                kwargs['headers'].update(headers)
-            else:
-                kwargs['headers'] = headers
+        if 'headers' in kwargs:
+            kwargs['headers'].update(headers)
+        else:
+            kwargs['headers'] = headers
 
         # Add auth if using basic/token auth (not Bearer)
         if auth:
@@ -75,8 +80,9 @@ class JiraApi(object):
     def check_url_and_user(self) -> bool:
 
         ret = False
-        # Check URL and user authentication
-        url = config.JIRA_API_URL + '/issue/RFM-1'
+        # Check URL and user authentication by getting current user info
+        # This endpoint works regardless of which projects exist
+        url = config.JIRA_API_URL + '/myself'
         logger.info(f'Connecting to  URL: {url} ...')
 
         try:
@@ -121,38 +127,72 @@ class JiraApi(object):
 
         return ret
 
-    def get_filter(self, url: str) -> dict:
+    def get_filter(self, url: str, max_results: int = 10000) -> dict:
+        """
+        Fetch issues from a JIRA filter URL with automatic pagination.
+
+        JIRA API limits results to 1000 per request. This method paginates
+        automatically to fetch all results up to max_results.
+        """
         assert len(url) > 0, f'Not a valid url {url}'
 
-        ret = ''
+        logger.info(f'Fetching filter results from: {url}')
 
-        # Limits the fields and rows returned.
-        url += '&fields=key&maxResults=10000'
-
-        logger.info(f'Connecting to  URL: {url} ...')
+        all_issues = []
+        start_at = 0
+        page_size = 1000  # JIRA API max is 1000 per request
+        total_results = None
 
         try:
+            while len(all_issues) < max_results:
+                # Build URL with pagination params
+                paginated_url = f'{url}&fields=key&maxResults={page_size}&startAt={start_at}'
 
-            response = self._make_request('GET', url)
+                response = self._make_request('GET', paginated_url)
 
-            if response.status_code == 200:
-                logger.info(f'Successfully connected to URL: {url}')
-                ret = response.json()
-            else:
-                logger.critical(f'ERROR: Unable to completed: {url}')
-                ret = ''
+                if response.status_code == 200:
+                    result = response.json()
+                    issues = result.get('issues', [])
+                    total_results = result.get('total', 0)
+
+                    if not issues:
+                        # No more results
+                        break
+
+                    all_issues.extend(issues)
+                    logger.debug(f'Fetched {len(issues)} issues (total so far: {len(all_issues)}/{total_results})')
+
+                    # Check if we've reached the end
+                    if len(all_issues) >= total_results or len(issues) < page_size:
+                        break
+
+                    start_at += len(issues)
+                else:
+                    logger.critical(f'ERROR: Unable to fetch filter results: {response.status_code}')
+                    return {'issues': [], 'total': 0}
+
+            # Trim to max_results if we fetched more
+            if len(all_issues) > max_results:
+                all_issues = all_issues[:max_results]
+
+            logger.info(f'Filter returned {len(all_issues)} issues (total available: {total_results})')
+            return {'issues': all_issues, 'total': total_results}
 
         except Exception as e:
             logger.critical(str(e))
             raise
 
-        return ret
-
-    def get_issue_info(self, key: str) -> tuple[bool, dict | None]:
+    def get_issue_info(self, key: str, fetch_rendered: bool = False) -> tuple[bool, dict | None]:
 
         # Check URL and user authentication
         # Expand changelog to get assignee change history
-        url = config.JIRA_API_URL + '/issue/' + key + '?expand=changelog'
+        expand_params = 'changelog'
+
+        # Only fetch renderedFields if HTML rendering is requested (--html flag)
+        if fetch_rendered:
+            expand_params += ',renderedFields'
+
+        url = config.JIRA_API_URL + '/issue/' + key + '?expand=' + expand_params
         logger.info(f'[{key}] Connecting to  URL: {url} ...')
 
         try:

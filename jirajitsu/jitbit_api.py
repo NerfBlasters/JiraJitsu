@@ -7,12 +7,49 @@ import logging
 import time
 from collections import deque
 from . import config
+from .version import __version__
 
 logger = logging.getLogger(config.LOG_ALIAS)
 
 """
 Wrapper class for all JitBit APIs
 """
+
+
+def is_valid_email(email: str) -> bool:
+    """
+    Perform basic sanity check on email address format.
+    Checks: not empty, contains '@', has '.' after '@'
+
+    This is a minimal check to catch obvious typos while accepting all RFC-valid formats
+    including internationalized domains, plus-addressing, subdomains, etc.
+
+    Args:
+        email: Email address to validate
+
+    Returns:
+        True if email passes basic sanity checks, False otherwise
+    """
+    if not email or not isinstance(email, str):
+        return False
+
+    # Must contain '@'
+    if '@' not in email:
+        return False
+
+    # Split on @ to get local and domain parts
+    local, _, domain = email.partition('@')
+
+    # Both parts must be non-empty
+    if not local or not domain:
+        return False
+
+    # Domain must contain at least one '.' (for TLD)
+    if '.' not in domain:
+        return False
+
+    return True
+
 
 class JitbitApi(object):
 
@@ -133,12 +170,16 @@ class JitbitApi(object):
             # Get authentication config
             auth, headers = self._get_auth_config()
 
+            # Add custom user-agent
+            if not headers:
+                headers = {}
+            headers['User-Agent'] = f'JiraJitsu/{__version__}'
+
             # Merge any existing headers
-            if headers:
-                if 'headers' in kwargs:
-                    kwargs['headers'].update(headers)
-                else:
-                    kwargs['headers'] = headers
+            if 'headers' in kwargs:
+                kwargs['headers'].update(headers)
+            else:
+                kwargs['headers'] = headers
 
             # Add auth if using basic auth
             if auth:
@@ -290,6 +331,43 @@ class JitbitApi(object):
             raise
 
         return ret
+
+    def get_ticket_comments(self, key: str, ticket_id: int) -> list[dict]:
+        """
+        Get all comments for a specific JitBit ticket.
+
+        Args:
+            key: Jira issue key (for logging)
+            ticket_id: JitBit ticket ID
+
+        Returns:
+            List of comment dictionaries with fields:
+            - CommentID: Unique comment identifier
+            - Body: Comment text
+            - CommentDate: ISO 8601 timestamp
+            - UserID, UserName: Comment author info
+        """
+        assert ticket_id > 0
+
+        url = config.JITBIT_API_URL + '/comments'
+        logger.info(f'[{key}] Fetching comments from URL: {url} for ticket {ticket_id}...')
+
+        params = {'id': ticket_id}
+
+        try:
+            response = self._make_request('GET', url, params=params)
+
+            if response.status_code == 200:
+                comments = response.json()
+                logger.info(f'[{key}] Successfully fetched {len(comments)} comments from ticket {ticket_id}')
+                return comments
+            else:
+                logger.error(f'[{key}] ERROR: Unable to fetch comments from URL: {url} (status {response.status_code})')
+                return []
+
+        except Exception as e:
+            logger.error(f'[{key}] Exception while fetching comments: {str(e)}')
+            return []
 
     def post_attach_file(self, key: str, ticket_id: int, attach_file: str) -> bool:
 
@@ -491,6 +569,25 @@ class JitbitApi(object):
 
         return ret
 
+    def post_update_close_date(self, key: str, ticket_id: int, close_date: str) -> bool:
+        """
+        Update ticket close date separately to avoid the API overwriting migrated values.
+
+        Args:
+            key: Jira issue key (for logging)
+            ticket_id: JitBit ticket ID
+            close_date: Close date timestamp string
+
+        Returns:
+            True if the API call succeeds, False otherwise
+        """
+        if not close_date:
+            logger.warning(f'[{key}] close_date not provided, skipping close date update')
+            return False
+
+        logger.debug(f'[{key}] Updating close date to {close_date}')
+        return self.post_update_ticket(key, ticket_id, closeDate=close_date)
+
     # Keep legacy methods for backwards compatibility, but use post_update_ticket internally
     def post_set_assignee(self, key: str, ticket_id: int, assign_to_id: int, date_created: str) -> bool:
         """Legacy method - use post_update_ticket instead"""
@@ -576,6 +673,77 @@ class JitbitApi(object):
             logger.critical(str(e))
             raise
 
+    def get_techs_for_category(self, category_id: int) -> list[dict]:
+        """
+        Get all technicians for a specific category.
+
+        Args:
+            category_id: JitBit category ID
+
+        Returns:
+            List of technician user dictionaries with UserID, Email, etc.
+        """
+        url = config.JITBIT_API_URL + '/TechsForCategory'
+        logger.info(f'Fetching technicians for category {category_id} from: {url}')
+
+        params = {'id': category_id}
+
+        try:
+            response = self._make_request('GET', url, params=params)
+
+            if response.status_code == 200:
+                techs = response.json()
+                logger.info(f'Successfully fetched {len(techs)} technicians for category {category_id}')
+                return techs
+            else:
+                logger.error(f'ERROR: Unable to fetch techs for category: {response.status_code}')
+                return []
+
+        except Exception as e:
+            logger.error(f'Exception fetching techs for category: {str(e)}')
+            return []
+
+    def preload_user_caches(self, category_id: int) -> None:
+        """
+        Pre-populate user and technician caches to minimize API calls during migration.
+        Fetches all users once and all technicians for the migration category.
+
+        Args:
+            category_id: JitBit category ID being migrated to
+        """
+        logger.info('Pre-loading user caches to optimize migration performance...')
+
+        # Fetch all users and populate email->user_id cache
+        users = self.get_users()
+        for user in users:
+            email = user.get('Email', '').lower()
+            user_id = user.get('UserID')
+            if email and user_id:
+                self._jitbit_user_id_cache[email] = user_id
+
+        logger.info(f'Cached {len(self._jitbit_user_id_cache)} user email->ID mappings')
+
+        # Fetch all technicians for the migration category
+        techs = self.get_techs_for_category(category_id)
+        tech_ids = {tech.get('UserID') for tech in techs if tech.get('UserID')}
+
+        # Mark all users as technician (True) or not (False) based on category techs
+        for user_id in self._jitbit_user_id_cache.values():
+            self._jitbit_technician_cache[user_id] = user_id in tech_ids
+
+        tech_count = sum(1 for is_tech in self._jitbit_technician_cache.values() if is_tech)
+        logger.info(f'Cached technician status for {len(self._jitbit_technician_cache)} users ({tech_count} are technicians for category {category_id})')
+
+        # Debug log each technician
+        for tech in techs:
+            tech_email = tech.get('Email', 'Unknown')
+            tech_id = tech.get('UserID', 'Unknown')
+            logger.debug(f'Technician: {tech_email} (ID: {tech_id})')
+
+        logger.info('Cache pre-loading complete - migration will use cached data')
+
+        return tech_count
+
     def search_tickets_by_jira_key(self, jira_key: str) -> int | None:
         """
         Search for an existing JitBit ticket by Jira key.
@@ -633,6 +801,11 @@ class JitbitApi(object):
         Note: Technician permissions are assigned per-category via AddCategoryTechPermission API,
               not during user creation.
         """
+        # Validate email format
+        if not is_valid_email(email):
+            logger.error(f'Invalid email address: {email}')
+            return -1
+
         url = config.JITBIT_API_URL + '/CreateUser'
         logger.info(f'Creating user: {first_name} {last_name} ({email})')
 

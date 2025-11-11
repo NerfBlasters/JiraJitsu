@@ -2,15 +2,20 @@
 import os
 import time
 import logging
+import re
 from datetime import datetime, timedelta
 from . import config
 import progressbar
+from rich.console import Console
+from rich.table import Table
 from .argument_parser import ArgumentParser
 from .log_handler import LogHandler
-from .jitbit_api import JitbitApi
+from .jitbit_api import JitbitApi, is_valid_email
 from .jira_api import JiraApi
+import bleach
 
 logger = logging.getLogger(config.LOG_ALIAS)
+console = Console()
 
 
 def convert_utc_to_central(utc_timestamp: str) -> str:
@@ -140,9 +145,93 @@ def calculate_close_date(issue_info: dict, assignee_email: str | None) -> str | 
         return None
 
 
+def clean_jira_wiki_markup(text: str) -> str:
+    """
+    Remove JIRA wiki markup formatting tags from text.
+    Currently removes color tags like {color:black}, {color:#333333}, {color}
+
+    Args:
+        text: Raw JIRA wiki markup text
+
+    Returns:
+        Cleaned text with formatting tags removed
+    """
+    if not text:
+        return text
+
+    # Remove color tags: {color:...} and {color}
+    text = re.sub(r'\{color.*?\}', '', text)
+
+    return text
+
+
+def strip_internal_images(html: str) -> str:
+    """
+    Remove img tags that reference internal IP addresses (192.168.x.x).
+    These won't be accessible from JitBit and would show as broken images.
+
+    Args:
+        html: HTML content from JIRA
+
+    Returns:
+        HTML with internal image references removed
+    """
+    if not html:
+        return html
+
+    # Remove img tags with src containing 192.168.x.x
+    html = re.sub(r'<img[^>]*src=["\'][^"\']*192\.168\.[^"\']*["\'][^>]*>', '', html, flags=re.IGNORECASE)
+
+    return html
+
+
+def sanitize_jira_html(html: str) -> str:
+    """
+    Sanitize HTML from JIRA renderedFields to prevent XSS while preserving formatting.
+    Uses allowlist-based filtering to remove potentially malicious HTML/JavaScript.
+    Also removes internal IP image references.
+
+    Args:
+        html: HTML content from JIRA
+
+    Returns:
+        Sanitized HTML safe for use in JitBit
+    """
+    if not html:
+        return html
+
+    # Define allowed HTML tags (typical JIRA rendered content)
+    ALLOWED_TAGS = [
+        'p', 'b', 'strong', 'em', 'i', 'u', 'a', 'ul', 'ol', 'li',
+        'br', 'table', 'tr', 'td', 'th', 'thead', 'tbody',
+        'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+        'pre', 'code', 'blockquote', 'img', 'span', 'div', 'hr'
+    ]
+
+    # Define allowed attributes per tag
+    ALLOWED_ATTRIBUTES = {
+        'a': ['href', 'title'],
+        'img': ['src', 'alt', 'title', 'width', 'height'],
+        '*': ['class']  # Allow class attribute on all tags (for JIRA CSS classes)
+    }
+
+    # First remove internal IP images (custom business logic)
+    html = strip_internal_images(html)
+
+    # Then sanitize HTML to remove dangerous tags/attributes (XSS protection)
+    clean_html = bleach.clean(
+        html,
+        tags=ALLOWED_TAGS,
+        attributes=ALLOWED_ATTRIBUTES,
+        strip=True  # Strip disallowed tags rather than escape them
+    )
+
+    return clean_html
+
+
 class ProcessData(object):
 
-    def __init__(self, create_missing_users: bool = False):
+    def __init__(self, create_missing_users: bool = False, use_html: bool = False):
         logger.info('Starting ProcessData ..')
         self.jitbit_api = JitbitApi()
         self.jira_api = JiraApi()
@@ -153,6 +242,21 @@ class ProcessData(object):
         # User creation settings
         self.create_missing_users = create_missing_users
         self.created_users = []  # Track created users: [(email, first_name, last_name, user_id), ...]
+
+        # Content rendering settings
+        self.use_html = use_html
+
+        # Migration statistics
+        self.stats = {
+            'total_tickets': 0,
+            'tickets_created': 0,
+            'tickets_updated': 0,
+            'comments_added': 0,
+            'comments_skipped': 0,
+            'attachments_added': 0,
+            'failed_tickets': 0,
+            'cached_technicians': 0
+        }
 
         self.start_time = time.time()
 
@@ -175,7 +279,7 @@ class ProcessData(object):
             except Exception as e:
                 logger.error(f'Failed to write created users log: {str(e)}')
 
-    def start(self):
+    def start(self, issues_list=None):
         try:
             self.jira_api = JiraApi()
 
@@ -183,12 +287,18 @@ class ProcessData(object):
             if not self.jira_api.check_url_and_user():
                 assert 'Check URL and User call failed!'
 
-            # We want to run a specific filter in JIRA.
-            # First give the filter Id and get the URL to run
-            filter_url = self.jira_api.get_filter_for_id(config.JIRA_FILTER_ID)
+            # If no issues list provided, use default filter from config
+            if issues_list is None:
+                # We want to run a specific filter in JIRA.
+                # First give the filter Id and get the URL to run
+                filter_url = self.jira_api.get_filter_for_id(config.JIRA_FILTER_ID)
 
-            # Run the filter and get a list of issues to migrate
-            issues_list = self.jira_api.get_filter(filter_url)
+                # Run the filter and get a list of issues to migrate
+                issues_list = self.jira_api.get_filter(filter_url)
+
+            # Pre-load user caches to minimize API calls during migration
+            tech_count = self.jitbit_api.preload_user_caches(config.JITBIT_MIGRATE_CATEGORY_ID)
+            self.stats['cached_technicians'] = tech_count
 
             # Setup progress bar
             total = len(issues_list['issues'])
@@ -201,23 +311,47 @@ class ProcessData(object):
 
                 key = issue['key']
 
+                self.stats['total_tickets'] += 1
                 pbar_count += 1
                 pbar.update(pbar_count)
                 logger.info(f'[{key}] Processing: {pbar_count}{total_str}')
 
-                status, issue_info = self.jira_api.get_issue_info(key)
+                status, issue_info = self.jira_api.get_issue_info(key, fetch_rendered=self.use_html)
 
                 if not status:
                     logger.critical(f'[{key}] ERROR: Not able to get issue info')
+                    self.stats['failed_tickets'] += 1
                     continue
 
                 self.jira_api.get_attachment(key, issue_info)
+
+                # Log key ticket metadata
+                reporter = issue_info['fields'].get('reporter') or issue_info['fields'].get('creator', {})
+                reporter_email = reporter.get('emailAddress', 'Unknown') if reporter else 'Unknown'
+                logger.info(f'[{key}] Reporter: {reporter_email}')
+
+                assignee = issue_info['fields'].get('assignee')
+                assignee_email = assignee.get('emailAddress', 'Unassigned') if assignee else 'Unassigned'
+                logger.info(f'[{key}] Assignee: {assignee_email}')
+
+                watchers = issue_info['fields'].get('watches', {})
+                watcher_count = watchers.get('watchCount', 0)
+                logger.info(f'[{key}] Watchers: {watcher_count}')
+
+                comments = issue_info['fields'].get('comment', {})
+                comment_count = len(comments.get('comments', []))
+                logger.info(f'[{key}] JIRA Comments: {comment_count}')
 
                 # Now create this issue in JitBit
                 self._migrate_to_jitbit(key, issue_info)
 
 
-            pbar.finish
+            pbar.finish()
+
+            # Display migration summary
+            end_time = time.time()
+            execution_time = end_time - self.start_time
+            self.display_summary(execution_time)
 
         except Exception as e:
             logger.critical(str(e))
@@ -227,9 +361,8 @@ class ProcessData(object):
     def test_jitbit(self):
 
         # Use this to test a single post to JitBit.
-        # Hardcoded key will be posted.
+        # Uses the first issue from the configured filter.
 
-        process_key = 'RFM-1'
         try:
             self.jira_api = JiraApi()
 
@@ -242,24 +375,43 @@ class ProcessData(object):
             # Run the filter and get a list of issues to deal with
             issues_list = self.jira_api.get_filter(filter_url)
 
-            # Iterate over each issue and get details
-            for issue in issues_list['issues']:
+            if not issues_list['issues']:
+                logger.critical('No issues found in filter')
+                return
 
-                key = issue['key']
+            # Use the first issue from the filter
+            issue = issues_list['issues'][0]
+            key = issue['key']
+            logger.info(f'Testing with issue: {key}')
 
-                if key != process_key:
-                    continue
+            # Process this single issue
+            status, issue_info = self.jira_api.get_issue_info(key, fetch_rendered=self.use_html)
 
-                status, issue_info = self.jira_api.get_issue_info(key)
+            if not status:
+                logger.critical(f'[{key}] ERROR: Not able to get issue info')
+                return
 
-                if not status:
-                    logger.critical(f'[{key}] ERROR: Not able to get issue info')
-                    continue
+            self.jira_api.get_attachment(key, issue_info)
 
-                self.jira_api.get_attachment(key, issue_info)
+            # Log key ticket metadata
+            reporter = issue_info['fields'].get('reporter') or issue_info['fields'].get('creator', {})
+            reporter_email = reporter.get('emailAddress', 'Unknown') if reporter else 'Unknown'
+            logger.info(f'[{key}] Reporter: {reporter_email}')
 
-                # Now create this issue in JitBit
-                self._migrate_to_jitbit(key, issue_info)
+            assignee = issue_info['fields'].get('assignee')
+            assignee_email = assignee.get('emailAddress', 'Unassigned') if assignee else 'Unassigned'
+            logger.info(f'[{key}] Assignee: {assignee_email}')
+
+            watchers = issue_info['fields'].get('watches', {})
+            watcher_count = watchers.get('watchCount', 0)
+            logger.info(f'[{key}] Watchers: {watcher_count}')
+
+            comments = issue_info['fields'].get('comment', {})
+            comment_count = len(comments.get('comments', []))
+            logger.info(f'[{key}] JIRA Comments: {comment_count}')
+
+            # Now create this issue in JitBit
+            self._migrate_to_jitbit(key, issue_info)
 
         except Exception as e:
             logger.critical(str(e))
@@ -275,6 +427,11 @@ class ProcessData(object):
 
         if not email:
             logger.warning('Cannot create user without email address')
+            return -1
+
+        # Validate email format
+        if not is_valid_email(email):
+            logger.error(f'Invalid email address from JIRA: {email}')
             return -1
 
         # Parse name from displayName
@@ -305,8 +462,33 @@ class ProcessData(object):
             # We append JIRA key to subject
             subject = issue_info['fields']['summary'] + ' (' + key + ')'
 
-            body = issue_info['fields']['description'] + '\n\n' + '(Originally assigned to: ' + issue_info['fields']['assignee']['displayName'] +  ')\n' + '(Original Resolution date: ' + issue_info['fields']['resolutiondate'][:10] + ')\n'
-            if body is None:
+            # Build body with null-safe concatenation
+            if self.use_html and issue_info.get('renderedFields') and issue_info['renderedFields'].get('description'):
+                # Use HTML-rendered description and sanitize it (removes XSS, internal images)
+                description = issue_info['renderedFields']['description']
+                description = sanitize_jira_html(description)
+            else:
+                # Use wiki markup and clean color tags
+                description = issue_info['fields'].get('description') or ''
+                description = clean_jira_wiki_markup(description)
+
+            # Add assignee info if available
+            assignee_name = ''
+            if issue_info['fields'].get('assignee'):
+                assignee_name = issue_info['fields']['assignee'].get('displayName', '')
+
+            # Add resolution date if available
+            resolution_date = ''
+            if issue_info['fields'].get('resolutiondate'):
+                resolution_date = issue_info['fields']['resolutiondate'][:10]
+
+            # Build body with metadata only if available
+            body = description
+            if assignee_name:
+                body += f'\n\n(Originally assigned to: {assignee_name})'
+            if resolution_date:
+                body += f'\n(Original Resolution date: {resolution_date})'
+            if not body:
                 body = ''
 
             # We will set all of the priorities to Normal (0)
@@ -327,27 +509,32 @@ class ProcessData(object):
                 status_id = 1  # New/Open in JitBit
                 logger.info(f'[{key}] Mapping to JitBit New (1)')
 
-            # Created by
-            # By default this will be the person creating the ticket.
-            # You can create 'on-behalf' of another person
-            # This code will get the details of the user from JIRA
+            # Created by / Reporter
+            # Use reporter field (not creator) - reporter is who reported the issue
+            # Creator is who created it in Jira (often admins migrating from other systems)
+            # Fallback to creator if reporter doesn't exist
 
-            created_by_email = issue_info['fields']['creator']['emailAddress']
+            reporter_field = issue_info['fields'].get('reporter') or issue_info['fields'].get('creator')
+            if reporter_field:
+                created_by_email = reporter_field.get('emailAddress')
+            else:
+                created_by_email = None
+
             logger.debug(f'Variable created_by_email is [{created_by_email}]')
             created_by = self.jitbit_api.get_user_id_by_email(created_by_email)
             logger.debug(f'Variable created_by is [{created_by}]')
 
             # Auto-create user if missing and flag is set
             if created_by <= 0 and self.create_missing_users:
-                logger.info(f'[{key}] Creator {created_by_email} not found, attempting to create')
-                created_by = self._create_user_from_jira_info(issue_info['fields']['creator'])
+                logger.info(f'[{key}] Reporter {created_by_email} not found, attempting to create')
+                created_by = self._create_user_from_jira_info(reporter_field)
                 if created_by <= 0:
                     # Fall back to default if creation failed
                     logger.warning(f'[{key}] Failed to create creator, using default user')
                     created_by = self.default_assign_id
             elif created_by <= 0:
                 # No auto-create, use default
-                logger.warning(f'[{key}] Creator {created_by_email} not found, using default user')
+                logger.warning(f'[{key}] Reporter {created_by_email} not found, using default user')
                 created_by = self.default_assign_id
 
             # Get original Jira assignee info (before any JitBit mapping)
@@ -414,35 +601,36 @@ class ProcessData(object):
                 # Ticket already exists - update instead of creating new
                 logger.info(f'[{key}] Ticket already exists (ID: {existing_ticket_id}), will update instead of creating new')
                 ticket_id = existing_ticket_id
+                self.stats['tickets_updated'] += 1
             else:
                 # No duplicate found - create new ticket
                 logger.info(f'[{key}] No existing ticket found, creating new ticket')
                 ticket_id = int(self.jitbit_api.post_ticket(key, category_id, subject, body, priority_id, created_by,
                                                             behalf_of=assign_to_id,
                                                             custom_fields=custom_fields if custom_fields else None))
+                self.stats['tickets_created'] += 1
 
             if ticket_id > 0:
 
-                # Update ticket with creator, date, and assignee
-                update_params = {
-                    'userId': created_by,  # Ticket creator/from
-                    'assignedUserId': assign_to_id,
-                    'date': date_created
-                }
-
-                self.jitbit_api.post_update_ticket(key, ticket_id, **update_params)
-
+                # Add comments and attachments first (while ticket is in initial status)
+                # This prevents comments from reopening a closed ticket
                 self._add_comments(key, ticket_id, issue_info)
                 self._add_attachments(key, ticket_id, issue_info)
 
-                # Set status first
-                self.jitbit_api.post_set_ticket_status(key, ticket_id, status_id)
+                # Update ticket last with consolidated API call
+                # Set all fields in one call to minimize API usage
+                # NOTE: userId is set during ticket creation (post_ticket), not in updates
+                update_params = {
+                    'assignedUserId': assign_to_id,
+                    'date': date_created,
+                    'statusId': status_id
+                }
 
-                # Then set closeDate AFTER status is set (for closed tickets only)
-                # JitBit may require the ticket to already be closed before accepting a historical closeDate
-                if close_date:
-                    logger.debug(f'Setting closeDate after status change: {close_date}')
-                    self.jitbit_api.post_update_ticket(key, ticket_id, closeDate=close_date)
+                update_success = self.jitbit_api.post_update_ticket(key, ticket_id, **update_params)
+
+                # JitBit overrides closeDate when closing a ticket, so update it after status change succeeds
+                if update_success and close_date and status_id == 3:
+                    self.jitbit_api.post_update_close_date(key, ticket_id, close_date)
 
                 # We update the issue on the JIRA side if the migration was successful.
                 # We use the 'Tag' field in JIRA for this
@@ -450,6 +638,7 @@ class ProcessData(object):
                 # self.jira_api.post_tag(key, config.JITBIT_MIGRATION_SUCCESS)
             else:
                 logger.critical(f'ERROR: could not create a ticket in JitBit for {key}')
+                self.stats['failed_tickets'] += 1
 
         except Exception as e:
 
@@ -461,17 +650,69 @@ class ProcessData(object):
                 logger.critical(f'{str(e)} - Marked ticket {ticket_id} for deletion')
             else:
                 logger.critical(str(e))
+            self.stats['failed_tickets'] += 1
             # Don't raise let continue
 
     def _add_comments(self, key: str, ticket_id: int, issue_info: dict):
         assert ticket_id > 0
 
+        # Fetch existing comments to avoid duplicates
+        existing_comments = self.jitbit_api.get_ticket_comments(key, ticket_id)
+
+        # Build a set of timestamps that already exist in JitBit comments
+        # Extract timestamp from "(Originally posted on: YYYY-MM-DD HH:MM:SS)" prefix
+        # JitBit may return different formats:
+        #   - "<!--html-->(Originally posted on: YYYY-MM-DD HH:MM:SS)<br><br>..." (HTML breaks)
+        #   - "<!--html-->(Originally posted on: YYYY-MM-DD HH:MM:SS)\n\n..." (literal newlines)
+        existing_timestamps = set()
+        for existing_comment in existing_comments:
+            body = existing_comment.get('Body', '')
+            # Strip HTML comment prefix if present
+            if body.startswith('<!--html-->'):
+                body = body[11:]  # Remove "<!--html-->"
+
+            # Check for format: "(Originally posted on: ...)"
+            if body.startswith('(Originally posted on: '):
+                # Look for closing paren followed by either HTML break or newline
+                # Try <br> first (HTML format)
+                end_idx = body.find(')<br>')
+                if end_idx == -1:
+                    # Try \n format (literal newline)
+                    end_idx = body.find(')\n')
+
+                if end_idx > 23:
+                    timestamp = body[23:end_idx]  # Extract the timestamp
+                    existing_timestamps.add(timestamp)
+                    logger.debug(f'[{key}] Extracted existing timestamp: "{timestamp}"')
+
+        # Log JitBit comment status
+        logger.info(f'[{key}] Found {len(existing_comments)} existing JitBit comments ({len(existing_timestamps)} previously migrated from JIRA)')
+        if existing_timestamps:
+            logger.debug(f'[{key}] Existing migrated timestamps: {existing_timestamps}')
+
+        # Log JIRA comment count
         comments = issue_info['fields']['comment']
+        jira_comment_count = len(comments['comments'])
+        logger.info(f'[{key}] Migrating {jira_comment_count} JIRA comments to JitBit')
+
+        comments_added = 0
+        comments_skipped = 0
+
         for comment in comments['comments']:
-            comment_text = comment['body']
+            # Use HTML-rendered or wiki markup based on flag
+            if self.use_html and comment.get('renderedBody'):
+                comment_text = comment['renderedBody']
+                comment_text = sanitize_jira_html(comment_text)
+            else:
+                comment_text = comment['body']
+                comment_text = clean_jira_wiki_markup(comment_text)
             # Comments can be anonymous - use default user ID
             comment_author_id = self.default_assign_id
-            comment_timestamp = comment['updated'][:10]
+            # Use raw timestamp from Jira (already in correct timezone)
+            # Jira format: "2024-01-15T14:30:45.123+0000"
+            comment_timestamp_full = comment['updated']
+            # Extract readable format: YYYY-MM-DD HH:MM:SS
+            comment_timestamp = comment_timestamp_full[:10] + ' ' + comment_timestamp_full[11:19]
             if 'updateAuthor' in comment:
                 comment_author = comment['updateAuthor'].get('emailAddress')
                 if comment_author:
@@ -487,7 +728,23 @@ class ProcessData(object):
 
 
             comment_data = '(Originally posted on: ' + comment_timestamp + ')\n\n' + comment_text
-            self.jitbit_api.post_comment(key, ticket_id, comment_data, comment_author_id)
+
+            # Check if a comment with this timestamp already exists in JitBit
+            logger.debug(f'[{key}] Checking new comment timestamp: "{comment_timestamp}"')
+            if comment_timestamp in existing_timestamps:
+                logger.info(f'[{key}] Comment from {comment_timestamp} already exists, skipping')
+                comments_skipped += 1
+            else:
+                logger.debug(f'[{key}] Timestamp not found in existing set, posting comment')
+                self.jitbit_api.post_comment(key, ticket_id, comment_data, comment_author_id)
+                comments_added += 1
+
+        # Accumulate to migration statistics
+        self.stats['comments_added'] += comments_added
+        self.stats['comments_skipped'] += comments_skipped
+
+        if comments_skipped > 0:
+            logger.info(f'[{key}] Added {comments_added} new comments, skipped {comments_skipped} duplicates')
 
     def _add_attachments(self, key: str, ticket_id: int, issue_info: dict):
 
@@ -504,8 +761,41 @@ class ProcessData(object):
                 # Ignore attachments of size 5K or less. These are normally logos or icons that we can skip
                 if os.path.getsize(file_dir) > 5120:
                     self.jitbit_api.post_attach_file(key, ticket_id, file_dir)
+                    self.stats['attachments_added'] += 1
                 else:
                     logger.info(f'[{key}] File size is < 5K. Ignoring. {file_dir}')
+
+    def display_summary(self, execution_time: float):
+        """
+        Display a summary table of migration statistics.
+        """
+        table = Table(title="Migration Summary", show_header=True, header_style="bold cyan")
+        table.add_column("Metric", style="cyan", no_wrap=True)
+        table.add_column("Count", justify="right", style="green")
+
+        # Format execution time
+        minutes = int(execution_time // 60)
+        seconds = int(execution_time % 60)
+        if minutes > 0:
+            time_str = f"{minutes}m {seconds}s"
+        else:
+            time_str = f"{seconds}s"
+
+        # Add rows
+        table.add_row("Total Tickets Processed", str(self.stats['total_tickets']))
+        table.add_row("Tickets Created", str(self.stats['tickets_created']))
+        table.add_row("Tickets Updated (existing)", str(self.stats['tickets_updated']))
+        table.add_row("Comments Added", str(self.stats['comments_added']))
+        table.add_row("Comments Skipped (duplicate)", str(self.stats['comments_skipped']))
+        table.add_row("Attachments Added", str(self.stats['attachments_added']))
+        table.add_row("Users Created", str(len(self.created_users)))
+        table.add_row("Technicians (cached)", str(self.stats['cached_technicians']))
+        table.add_row("Failed Tickets", str(self.stats['failed_tickets']), style="red" if self.stats['failed_tickets'] > 0 else "green")
+        table.add_row("Execution Time", time_str, style="yellow")
+
+        console.print("\n")
+        console.print(table)
+        console.print("\n")
 
 
 def main():
