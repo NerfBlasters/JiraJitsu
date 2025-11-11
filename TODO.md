@@ -14,6 +14,12 @@ Project tasks and feature tracking.
 
 ### Medium Priority
 
+- [ ] **Category handling for existing tickets** - Decide behavior when ticket exists in different category
+  - Current: Updates existing ticket in-place, doesn't move to new category
+  - Option A: Check if destination category == existing category, treat mismatch as new ticket
+  - Option B: Add flag to force category update on existing tickets
+  - Option C: Add `--move-category` flag to explicitly move tickets between categories
+  - Related: `search_tickets_by_jira_key()` searches ALL categories globally
 - [ ] **Attachment verification** - Under NEW_ONLY setting, verify each attachment exists (not just directory)
 - [ ] **JitAPI JSON-only output** - Make jitapi command output only JSON for better piping to `jq`
 - [ ] **JitAPI pagination fix** - Tickets endpoint doesn't respect `--offset` and `--count` params together (API bug?)
