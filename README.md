@@ -619,8 +619,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Acknowledgments
 
 - Original [sandpiper](https://github.com/ajegam/sandpiper) project by ajegam
-- Fork by andy@clownshoemotorsports.com (November 2023)
-- Rebranded and enhanced as JiraJitsu (2024)
+- Fork by Andy Pettit (November 2023)
+- Rebranded and enhanced as JiraJitsu (2025)
 
 ## Support
 
